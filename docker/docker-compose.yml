@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  ubuntu-cmd-agent:
+    build: .
+    container_name: vibe_shell
+    restart: always
+    ports:
+      - "22335:22"     # SSH
+      - "22336:8000"   # App / API
+    tty: true
+    stdin_open: true
+    environment:
+      - TZ=Europe/Moscow
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+    # volumes:
+    #   - ./data:/home/ubuntu

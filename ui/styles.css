@@ -1,0 +1,3 @@
+#chat { height: 66vh !important; }
+#trace_col { height: 66vh; display: flex; flex-direction: column; }
+#trace { flex: 1 1 auto; overflow: auto; }
