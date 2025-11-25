@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  ubuntu-cmd-agent:
+  vibe-shell-playground:
     build: .
     container_name: vibe_shell
     restart: always
@@ -12,10 +12,4 @@ services:
     stdin_open: true
     environment:
       - TZ=Europe/Moscow
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - capabilities: [gpu]
-    # volumes:
-    #   - ./data:/home/ubuntu
+    

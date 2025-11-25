@@ -5,7 +5,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain.agents import create_agent
 
 from agent.prompt import SYSTEM_PROMPT
-from agent.middlewares import log_before_agent, log_before_model, log_after_model, log_after_agent
+from agent.middlewares import safe_before_agent, safe_before_model, safe_after_model, safe_after_agent
+from agent.attach_runtime_safety import attach_runtime_safety
 
 
 async def setup_agent():
@@ -17,6 +18,16 @@ async def setup_agent():
     })
     tools = await client.get_tools()
 
+    from langchain_core.runnables import RunnableLambda
+
+    def safe_agent(request, config=None):
+        print(request)
+        return {"action": "ALLOW"}
+
+    dummy_safe_agent = RunnableLambda(safe_agent)
+
+    w_tools = [attach_runtime_safety(tool, dummy_safe_agent) for tool in tools]
+
     model = ChatOpenAI(
         model="deepseek-chat",
         base_url="https://api.deepseek.com/v1",
@@ -25,15 +36,13 @@ async def setup_agent():
     )
 
     memory = MemorySaver()
-    middlewares = [log_before_agent, log_before_model, log_after_model, log_after_agent]
+    middlewares = [safe_before_agent, safe_before_model, safe_after_model, safe_after_agent]
 
     return create_agent(
         model=model,
-        tools=tools,
+        tools=w_tools,
         middleware=middlewares,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=memory,
-        # interrupt_before=["tools"],
-        # interrupt_after=["tools"],
         name="vibe_shell"
     )
