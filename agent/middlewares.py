@@ -1,24 +1,9 @@
-from datetime import datetime
 from typing import List, Dict, Any
 from langgraph.runtime import Runtime
-from langchain_core.runnables import RunnableLambda
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, ToolCall
 from langchain.agents.middleware import before_agent, after_agent, before_model, after_model
 from langchain.agents.middleware import AgentState
-
-LOG_PATH = "webui.log"
-safe_agent = RunnableLambda(lambda _: {"action": "APPROVE"})
-
-
-def _log_line(tag: str, data: Any) -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        import json
-        serialized = json.dumps(data, ensure_ascii=False)
-    except Exception as e:
-        serialized = f"<unserializable: {e}>"
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(f"[{ts}] [{tag}] {serialized}\n")
+from agent.utils import safe_agent, log_line
 
 
 def _serialize_single_tool_call(tc: Any) -> Dict[str, Any]:
@@ -225,28 +210,28 @@ def safe_before_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | N
         },
         "session_policy": session_policy,
     }
-    _log_line("before_agent.core_request", core_request)
+    log_line("before_agent.core_request", core_request)
 
     try:
         decision = safe_agent.invoke(core_request)
     except Exception as e:
-        _log_line("before_agent.core_error", {"error": str(e)})
+        log_line("before_agent.core_error", {"error": str(e)})
         return {
             "messages": [AIMessage(content="[SafeAgent Controller] Safety core unavailable. Request rejected.")],
             "jump_to": "end",
         }
     action = str(decision.get("action", "")).upper().strip()
-    _log_line("before_agent.core_decision", decision)
+    log_line("before_agent.core_decision", decision)
 
     # Block unknown actions (zero-trust policy).
     ALLOWED_ACTIONS = {"APPROVE", "REJECT", "OVERRIDE"}
     if action not in ALLOWED_ACTIONS:
-        reject_text = (
+        error_text = (
             f"[SafeAgent Controller] Unknown action '{action}'. "
             "Request blocked by zero-trust runtime."
         )
         return {
-            "messages": [AIMessage(content=reject_text)],
+            "messages": [AIMessage(content=error_text)],
             "jump_to": "end"
         }
 
@@ -424,12 +409,12 @@ def safe_before_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | N
         },
         "session_policy": session_policy,
     }
-    _log_line("before_model.core_request", core_request)
+    log_line("before_model.core_request", core_request)
 
     try:
         decision = safe_agent.invoke(core_request)
     except Exception as e:
-        _log_line("before_model.core_error", {"error": str(e)})
+        log_line("before_model.core_error", {"error": str(e)})
         error_text = (
             "[SafeAgent Controller] Safety core unavailable. "
             "Tool plan cannot be executed for this turn."
@@ -441,7 +426,7 @@ def safe_before_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | N
         setattr(state["messages"][-1], "tool_calls", [])
         return {"jump_to": "end"}
     action = str(decision.get("action", "")).upper().strip()
-    _log_line("before_model.core_decision", decision)
+    log_line("before_model.core_decision", decision)
 
     # Allowed actions at this stage
     ALLOWED_ACTIONS = {"APPROVE", "OVERRIDE", "ROLLBACK", "NO_MODEL_CALLING", "REJECT"}
@@ -715,12 +700,12 @@ def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
         },
         "session_policy": session_policy,
     }
-    _log_line("after_model.core_request", core_request)
+    log_line("after_model.core_request", core_request)
 
     try:
         decision = safe_agent.invoke(core_request)
     except Exception as e:
-        _log_line("after_model.core_error", {"error": str(e)})
+        log_line("after_model.core_error", {"error": str(e)})
         error_text = (
             "[SafeAgent Controller] Safety core unavailable. "
             "Tool plan cannot be executed for this turn."
@@ -732,7 +717,7 @@ def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
         setattr(state["messages"][-1], "tool_calls", [])
         return {"jump_to": "end"}
     action = str(decision.get("action", "")).upper().strip()
-    _log_line("after_model.core_decision", decision)
+    log_line("after_model.core_decision", decision)
 
     # Set of allowed plan actions.
     ALLOWED_ACTIONS = {"APPROVE", "REPLAN", "REJECT"}
@@ -939,12 +924,12 @@ def safe_after_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
         },
         "session_policy": session_policy,
     }
-    _log_line("after_agent.core_request", core_request)
+    log_line("after_agent.core_request", core_request)
 
     try:
         decision = safe_agent.invoke(core_request)
     except Exception as e:
-        _log_line("after_agent.core_error", {"error": str(e)})
+        log_line("after_agent.core_error", {"error": str(e)})
         error_text = (
             "[SafeAgent Controller] Safety core unavailable. "
             "Tool plan cannot be executed for this turn."
@@ -956,7 +941,7 @@ def safe_after_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
         setattr(state["messages"][-1], "tool_calls", [])
         return None
     action = str(decision.get("action", "")).upper().strip()
-    _log_line("after_agent.core_decision", decision)
+    log_line("after_agent.core_decision", decision)
 
     # Zero-trust: only allow a closed set of actions.
     ALLOWED_ACTIONS = {"APPROVE", "REJECT", "OVERRIDE"}

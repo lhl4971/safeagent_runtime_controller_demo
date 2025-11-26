@@ -47,7 +47,7 @@ async def stream(user_msg: str, chat: List[Dict], trace: List[Dict], sid: uuid.U
 
     async for ev in agent.astream_events(
         init, version="v1",
-        config={"configurable": {"thread_id": sid}}
+        config={"configurable": {"thread_id": sid}, "recursion_limit": 100}
     ):
         kind = ev.get("event")
         data = ev.get("data", {})

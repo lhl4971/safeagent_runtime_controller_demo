@@ -6,7 +6,7 @@ from langchain.agents import create_agent
 
 from agent.prompt import SYSTEM_PROMPT
 from agent.middlewares import safe_before_agent, safe_before_model, safe_after_model, safe_after_agent
-from agent.attach_runtime_safety import attach_runtime_safety
+from agent.tool_warpper import SafeAgentToolWrapperMiddleware
 
 
 async def setup_agent():
@@ -20,13 +20,10 @@ async def setup_agent():
 
     from langchain_core.runnables import RunnableLambda
 
-    def safe_agent(request, config=None):
-        print(request)
-        return {"action": "ALLOW"}
+    def _safe_agent(request, config=None):
+        return {"action": "CALL_ALLOW"}
 
-    dummy_safe_agent = RunnableLambda(safe_agent)
-
-    w_tools = [attach_runtime_safety(tool, dummy_safe_agent) for tool in tools]
+    safe_agent = RunnableLambda(_safe_agent)
 
     model = ChatOpenAI(
         model="deepseek-chat",
@@ -36,13 +33,18 @@ async def setup_agent():
     )
 
     memory = MemorySaver()
-    middlewares = [safe_before_agent, safe_before_model, safe_after_model, safe_after_agent]
+    middlewares = [
+        safe_before_agent, safe_after_agent,
+        safe_before_model, safe_after_model,
+        SafeAgentToolWrapperMiddleware(safe_agent)
+    ]
 
     return create_agent(
         model=model,
-        tools=w_tools,
+        tools=tools,
         middleware=middlewares,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=memory,
+        # interrupt_after=["tools"],
         name="vibe_shell"
     )
