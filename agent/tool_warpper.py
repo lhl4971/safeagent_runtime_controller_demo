@@ -5,7 +5,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import Runnable
 from langgraph.types import Command
-from agent.utils import log_line
+from utils.agent import log_line
 
 
 class SafeAgentToolWrapperMiddleware(AgentMiddleware):
@@ -31,7 +31,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
        The wrapper then:
        - Verifies that the approved tool `name` matches the actual tool name.
          Any mismatch is treated as a protocol violation and the call is blocked
-         with a `ToolMessage(status="blocked")`.
+         with a `ToolMessage(status="error")`.
        - Overwrites `tool_call["args"]` with the approved `args`.
        - Delegates to the underlying tool-node via `handler(request)` without
          consulting the SafeAgent Core again.
@@ -72,17 +72,17 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                - If `decision["override_args"]` is a dict, replace
                  `tool_call["args"]` with it.
                - If the override payload is missing or invalid, return a
-                 `ToolMessage(status="blocked")` with a deterministic error
+                 `ToolMessage(status="error")` with a deterministic error
                  message and do not execute the tool.
                - Otherwise, forward to `handler(request)`.
 
            * CALL_BLOCK
-               - Return a `ToolMessage(status="blocked")` containing either
+               - Return a `ToolMessage(status="error")` containing either
                  `decision["safety_rationale"]` or a fixed default message.
                - The underlying tool is never called.
 
            * CALL_JIT_APPROVAL
-               - Return a `ToolMessage(status="safeagent_jit_pending")` whose
+               - Return a `ToolMessage(status="success")` whose
                  `additional_kwargs["pending_call"]` embeds:
                      {
                          "name": <call_name>,
@@ -99,13 +99,13 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
     Error handling and zero-trust properties
     ---------------------------------------
     - If the SafeAgent Core raises or is unavailable, the call is failed-closed:
-      a `ToolMessage(status="blocked")` is returned and the tool is not
+      a `ToolMessage(status="error")` is returned and the tool is not
       executed.
     - If the Core response is not a dict, or if `decision["action"]` is not in
       the fixed allow-list
       `{"CALL_ALLOW", "CALL_REWRITE", "CALL_BLOCK", "CALL_JIT_APPROVAL"}`,
       the call is blocked by returning a deterministic `ToolMessage` with
-      `status="blocked"`.
+      `status="error"`.
     - All argument mutations happen inside this middleware; the underlying
       tool implementation and LangChain/ LangGraph’s tracing/callbacks are
       exercised normally through `handler(request)`.
@@ -156,7 +156,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                     ),
                     tool_call_id=tool_call_id or "hitl-mismatch",
                     name=call_name,
-                    status="blocked",
+                    status="error",
                 )
 
             # Overwrite args with the approved ones
@@ -194,7 +194,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 content=error_text,
                 tool_call_id=tool_call_id or "safeagent-blocked",
                 name=call_name or getattr(tool, "name", "unknown_tool"),
-                status="blocked",
+                status="error",
             )
         action = str(decision.get("action", "")).upper().strip()
         log_line("tool_wrapper.core_decision", decision)
@@ -209,7 +209,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 content=error_text,
                 tool_call_id=tool_call_id or "safeagent-blocked",
                 name=call_name or getattr(tool, "name", "unknown_tool"),
-                status="blocked",
+                status="error",
             )
 
         if action == "CALL_BLOCK":
@@ -221,7 +221,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 content=safety_rationale,
                 tool_call_id=tool_call_id or "safeagent-blocked",
                 name=call_name or getattr(tool, "name", "unknown_tool"),
-                status="blocked",
+                status="error",
             )
 
         if action == "CALL_REWRITE":
@@ -237,7 +237,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                     content=error_text,
                     tool_call_id=tool_call_id or "safeagent-blocked",
                     name=call_name or getattr(tool, "name", "unknown_tool"),
-                    status="blocked",
+                    status="error",
                 )
             return handler(request)
 
@@ -258,7 +258,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 content=content,
                 tool_call_id=tool_call_id or "safeagent-jit-pending",
                 name=call_name or getattr(tool, "name", "unknown_tool"),
-                status="safeagent_jit_pending",
+                status="success",
                 additional_kwargs=additional_kwargs,
             )
 
@@ -302,7 +302,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                     ),
                     tool_call_id=tool_call_id or "hitl-mismatch",
                     name=call_name,
-                    status="blocked",
+                    status="error",
                 )
 
             # Overwrite args with the approved ones
@@ -340,7 +340,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 content=error_text,
                 tool_call_id=tool_call_id or "safeagent-blocked",
                 name=call_name or getattr(tool, "name", "unknown_tool"),
-                status="blocked",
+                status="error",
             )
         action = str(decision.get("action", "")).upper().strip()
         log_line("tool_wrapper.core_decision", decision)
@@ -355,7 +355,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 content=error_text,
                 tool_call_id=tool_call_id or "safeagent-blocked",
                 name=call_name or getattr(tool, "name", "unknown_tool"),
-                status="blocked",
+                status="error",
             )
 
         if action == "CALL_BLOCK":
@@ -367,7 +367,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 content=safety_rationale,
                 tool_call_id=tool_call_id or "safeagent-blocked",
                 name=call_name or getattr(tool, "name", "unknown_tool"),
-                status="blocked",
+                status="error",
             )
 
         if action == "CALL_REWRITE":
@@ -383,7 +383,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                     content=error_text,
                     tool_call_id=tool_call_id or "safeagent-blocked",
                     name=call_name or getattr(tool, "name", "unknown_tool"),
-                    status="blocked",
+                    status="error",
                 )
             return await handler(request)
 
@@ -404,7 +404,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 content=content,
                 tool_call_id=tool_call_id or "safeagent-jit-pending",
                 name=call_name or getattr(tool, "name", "unknown_tool"),
-                status="safeagent_jit_pending",
+                status="success",
                 additional_kwargs=additional_kwargs,
             )
 

@@ -3,7 +3,7 @@ from langgraph.runtime import Runtime
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, ToolCall
 from langchain.agents.middleware import before_agent, after_agent, before_model, after_model
 from langchain.agents.middleware import AgentState
-from agent.utils import safe_agent, log_line
+from utils.agent import safe_agent, log_line
 
 
 def _serialize_single_tool_call(tc: Any) -> Dict[str, Any]:

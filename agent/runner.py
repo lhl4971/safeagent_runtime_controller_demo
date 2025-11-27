@@ -1,75 +1,101 @@
 import uuid
-import json
 import asyncio
-from typing import Any, Dict, List
-from langchain_core.messages import HumanMessage, BaseMessage
+from typing import Dict, List, Deque, Any, Optional
+from langchain_core.messages import HumanMessage
 from agent.core import setup_agent
+from utils.agent import collect_pending_calls, render_trace
 
 agent = asyncio.run(setup_agent())
 
 
-def render_trace(events: List[Dict[str, Any]]) -> str:
-    md = ["### 🧭 Function Calls"]
-
-    def pretty(obj: Any) -> str:
-        if isinstance(obj, BaseMessage):
-            obj = json.loads(getattr(obj, "content", obj))
-        return json.dumps(obj, ensure_ascii=False, indent=2)
-
-    for ev in events:
-        step = ev.get("step", "?")
-        if "action" in ev:
-            tool = ev["action"].get("tool", "?")
-            args = ev["action"].get("args", {})
-            md.append(
-                f"<details><summary>🤖 Action #{step}: <code>{tool}</code></summary>\n\n"
-                f"<pre>{pretty(args)}</pre>\n\n</details>"
-            )
-        if "observation" in ev:
-            out = ev["observation"].get("output", {})
-            md.append(
-                f"<details><summary>🌍 Observation #{step}</summary>\n\n"
-                f"<pre>{pretty(out)}</pre>\n\n</details>"
-            )
-    return "\n\n".join(md)
-
-
-async def stream(user_msg: str, chat: List[Dict], trace: List[Dict], sid: uuid.UUID):
-    chat = (chat or []) + [{"role": "user", "content": user_msg}, {"role": "assistant", "content": ""}]
-    ai_idx = len(chat) - 1
-    ai_buf = ""
+async def stream(
+    user_msg: str,
+    chat: List[Dict],
+    trace: List[Dict],
+    sid: uuid.UUID,
+    call_decisions: Optional[Deque[Dict[str, Any]]],
+):
+    chat = chat or []
     trace = trace or []
     step = sum(1 for e in trace if "action" in e)
 
-    yield chat, render_trace(trace), chat, trace
+    if call_decisions:
+        decisions_list = list(call_decisions)
+        meta_msg = HumanMessage(
+            content="[SafeAgent HITL] Applying human decisions for pending tool calls.",
+            additional_kwargs={
+                "hitl_call_decisions": decisions_list,
+                "safe_tags": ["NO_LONG_TERM_MEMORY_WRITE"],
+            },
+        )
 
-    init = {"messages": [HumanMessage(content=user_msg)]}
+        agent.update_state(
+            {"configurable": {"thread_id": sid}},
+            {"messages": [meta_msg]},
+        )
 
-    async for ev in agent.astream_events(
-        init, version="v1",
-        config={"configurable": {"thread_id": sid}, "recursion_limit": 100}
-    ):
-        kind = ev.get("event")
-        data = ev.get("data", {})
-        tool_name = data.get("name") or ev.get("name")
-        inputs = data.get("inputs") or data.get("input") or {}
-        output = data.get("output")
+        ai_idx = None
+        for i in range(len(chat) - 1, -1, -1):
+            if chat[i].get("role") == "assistant":
+                ai_idx = i
+                break
+        ai_buf = chat[ai_idx].get("content", "") or ""
+    else:
+        chat = chat + [
+            {"role": "user", "content": user_msg},
+            {"role": "assistant", "content": ""},
+        ]
+        ai_idx = len(chat) - 1
+        ai_buf = ""
 
-        if kind == "on_chat_model_stream":
-            ch = data.get("chunk")
-            if ch and getattr(ch, "content", None):
-                ai_buf += ch.content
-                chat[ai_idx]["content"] = ai_buf
-                yield chat, render_trace(trace), chat, trace
-        elif kind == "on_tool_start":
-            step += 1
-            trace.append({"step": step, "action": {"tool": tool_name, "args": inputs}})
-            yield chat, render_trace(trace), chat, trace
-        elif kind == "on_tool_end":
-            if not trace:
-                step = 1
-                trace.append({"step": step})
-            trace[-1]["observation"] = {"output": output}
-            yield chat, render_trace(trace), chat, trace
+    yield chat, render_trace(trace), chat, trace, None
 
-    yield chat, render_trace(trace), chat, trace
+    first_loop = True
+    while True:
+        if not call_decisions and first_loop:
+            init = {"messages": [HumanMessage(content=user_msg)]}
+        else:
+            init = None
+
+        first_loop = False
+        call_decisions = None
+
+        async for ev in agent.astream_events(
+            init, version="v1",
+            config={"configurable": {"thread_id": sid}, "recursion_limit": 100}
+        ):
+            kind = ev.get("event")
+            data = ev.get("data", {})
+            tool_name = data.get("name") or ev.get("name")
+            inputs = data.get("inputs") or data.get("input") or {}
+            output = data.get("output")
+
+            if kind == "on_chat_model_stream":
+                ch = data.get("chunk")
+                if ch and getattr(ch, "content", None):
+                    ai_buf += ch.content
+                    chat[ai_idx]["content"] = ai_buf
+                    yield chat, render_trace(trace), chat, trace, None
+            elif kind == "on_tool_start":
+                step += 1
+                trace.append({"step": step, "action": {"tool": tool_name, "args": inputs}})
+                yield chat, render_trace(trace), chat, trace, None
+            elif kind == "on_tool_end":
+                if not trace:
+                    step = 1
+                    trace.append({"step": step})
+                trace[-1]["observation"] = {"output": output}
+                yield chat, render_trace(trace), chat, trace, None
+
+        state = agent.get_state({"configurable": {"thread_id": sid}})
+        messages = state.values.get("messages", [])
+
+        pending_calls = collect_pending_calls(messages)
+        if len(pending_calls) > 0:
+            yield chat, render_trace(trace), chat, trace, pending_calls
+            return
+
+        next_nodes = getattr(state, "next", None)
+        if not next_nodes:
+            yield chat, render_trace(trace), chat, trace, None
+            return

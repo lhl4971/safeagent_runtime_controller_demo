@@ -1,3 +1,107 @@
+/* 聊天区域保持不变 */
 #chat { height: 66vh !important; }
 #trace_col { height: 66vh; display: flex; flex-direction: column; }
 #trace { flex: 1 1 auto; overflow: auto; }
+
+/* ===== 全屏遮罩：半透明黑色 + 居中 ===== */
+#hitl_modal {
+  position: fixed !important;
+  inset: 0;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 9999 !important;
+}
+
+/* 只把 group 自带的那一层背景清空，不再影响所有子 div */
+#hitl_modal > div {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+/* ===== 真正的卡片容器：圆角 + 不透明背景 ===== */
+/* 颜色选用高对比度深蓝灰 + 近白字体，适配深色/浅色背景 */
+#hitl_card {
+  background: #111827 !important;        /* 深蓝灰，Tailwind slate-900 近似值 */
+  color: #f9fafb;                        /* 近白，保证对比度 */
+  border-radius: 20px !important;
+  padding: 16px 20px 14px;
+
+  width: min(580px, 92vw);               /* 略放宽，让三颗按钮一行更舒展 */
+  margin: 0 auto;
+
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(249, 250, 251, 0.08);
+}
+
+/* 卡片里的 markdown 面板去掉默认灰底，只显示文字 */
+#hitl_card .gr-markdown,
+#hitl_modal_content {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  margin: 0;
+}
+
+/* 标题微调 */
+#hitl_modal_content h2,
+#hitl_modal_content h3 {
+  margin-top: 0;
+  margin-bottom: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+/* code / pre 样式 */
+#hitl_modal_content code,
+#hitl_modal_content pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 0.85rem;
+}
+
+/* ===== 按钮区域：单行布局 ===== */
+#hitl_modal_actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: nowrap;          /* 不换行 */
+  gap: 8px;
+}
+
+/* 基础按钮样式：胶囊圆角 + 等宽 */
+#hitl_modal_actions .gr-button,
+#hitl_modal_actions button {
+  border-radius: 999px !important;
+  font-size: 0.9rem;
+  padding: 8px 14px !important;
+  border: none !important;
+  color: #ffffff;
+  flex: 1 1 0;                /* 三个按钮等分一行 */
+  text-align: center;
+}
+
+/* APPROVE（绿色），取高对比度绿：近似 Tailwind green-500 */
+#hitl_modal_actions .gr-button:nth-of-type(1),
+#hitl_modal_actions button:nth-of-type(1) {
+  background: #22c55e;
+}
+
+/* SHADOW RUN（中性深灰），近似 gray-600 */
+#hitl_modal_actions .gr-button:nth-of-type(2),
+#hitl_modal_actions button:nth-of-type(2) {
+  background: #4b5563;
+}
+
+/* REJECT（红色），近似 red-500 */
+#hitl_modal_actions .gr-button:nth-of-type(3),
+#hitl_modal_actions button:nth-of-type(3) {
+  background: #ef4444;
+}
+
+/* hover 轻微提亮 */
+#hitl_modal_actions .gr-button:hover,
+#hitl_modal_actions button:hover {
+  filter: brightness(1.06);
+}

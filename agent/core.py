@@ -21,7 +21,7 @@ async def setup_agent():
     from langchain_core.runnables import RunnableLambda
 
     def _safe_agent(request, config=None):
-        return {"action": "CALL_ALLOW"}
+        return {"action": "CALL_JIT_APPROVAL"}
 
     safe_agent = RunnableLambda(_safe_agent)
 
@@ -45,6 +45,6 @@ async def setup_agent():
         middleware=middlewares,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=memory,
-        # interrupt_after=["tools"],
+        interrupt_after=["tools"],
         name="vibe_shell"
     )
