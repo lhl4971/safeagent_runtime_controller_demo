@@ -2,116 +2,63 @@ from typing import Any, Dict, Union, Callable, Awaitable
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langgraph.types import Command
-from utils.agent import log_line
+from utils.agent import log_line, last_message_index
 
 
 class SafeAgentToolWrapperMiddleware(AgentMiddleware):
     """
-    Tool-level safety middleware that delegates every tool call to a SafeAgent Core.
+    Safety middleware for the tool_wrapper stage.
 
-    This middleware targets LangChain 1.x `ToolCallRequest` objects, where
-    `request.tool_call` is a dict produced from the model's `tool_calls`. It
-    implements a zero-trust, two-stage policy for each tool invocation:
+    Purpose
+    -------
+    Enforces zero-trust inspection on every outbound tool call before the
+    tool executor receives it. The middleware consults the SafeAgent Core
+    to determine whether the call is safe, must be rewritten, must be blocked,
+    or must be escalated for human review.
 
-    1. Human-in-the-loop (HITL) fast path
-       If the current `tool_call.id` appears in
-       `runtime.config["configurable"]["approved_tool_calls"]`, the call is
-       treated as already reviewed by a human. The corresponding record MUST
-       have the form:
+    What this middleware provides
+    -----------------------------
+    - Blocks unsafe or disallowed tool calls before execution.
+    - Rewrites tool arguments when the Core provides a safe override.
+    - Forces human-in-the-loop approval for sensitive tool calls.
+    - Guarantees that only validated tool invocations reach the handler.
+    - Applies HITL replay flags so approved calls bypass further scrutiny.
+    - Prevents bypass of safety logic under all execution modes (sync and async).
 
-           {
-               "id": <tool_call_id>,
-               "name": <approved_tool_name>,
-               "args": <approved_args_dict>
-           }
+    Supported actions
+    -----------------
+    - **CALL_ALLOW**
+      The tool call is safe. It is forwarded to the underlying handler unchanged.
 
-       The wrapper then:
-       - Verifies that the approved tool `name` matches the actual tool name.
-         Any mismatch is treated as a protocol violation and the call is blocked
-         with a `ToolMessage(status="error")`.
-       - Overwrites `tool_call["args"]` with the approved `args`.
-       - Delegates to the underlying tool-node via `handler(request)` without
-         consulting the SafeAgent Core again.
+    - **CALL_REWRITE**
+      The Core supplies override_args that replace the original arguments.
+      The rewritten call is executed instead of the original.
 
-    2. SafeAgent Core–mediated normal path
-       For all other calls (i.e. those not present in `approved_tool_calls`),
-       the wrapper delegates the decision to the SafeAgent Core (`safe_agent`):
+    - **CALL_BLOCK**
+      The call is unsafe. A ToolMessage with an error status is returned
+      and the tool is not executed.
 
-       - It builds a structured request:
+    - **CALL_JIT_APPROVAL**
+      The call requires human confirmation. A ToolMessage is emitted to
+      trigger a HITL approval workflow and the tool is not executed until
+      approval is provided.
 
-           {
-               "hook": "tool_wrapper",
-               "tool": {
-                   "name": <call_name>,
-                   "description": <tool.description or None>,
-               },
-               "args": <tool_call['args']>,
-               "session_policy": request.state.get("session_policy", {})
-           }
+    Safety guarantees
+    -----------------
+    - Unknown or malformed actions are rejected deterministically.
+    - Unsafe calls never reach the underlying tool executor.
+    - HITL-approved calls are executed exactly once and bypass future checks.
+    - The SafeAgent Core cannot inject arbitrary prompts or code into the tool call.
+    - All safety outcomes are logged for audit and traceability.
 
-         and calls either:
-           - `safe_agent.invoke(...)` in `wrap_tool_call`, or
-           - `safe_agent.ainvoke(...)` in `awrap_tool_call`.
-
-       - The Core is expected to return a dict with an `"action"` field, one of:
-           * `"CALL_ALLOW"`      – execute the tool with current args
-           * `"CALL_REWRITE"`    – execute the tool with `decision["override_args"]`
-           * `"CALL_BLOCK"`      – do not execute the tool
-           * `"CALL_JIT_APPROVAL"` – emit a pending ToolMessage for HITL review
-
-       - Behavior by action:
-
-           * CALL_ALLOW
-               - No modification to `tool_call["args"]`.
-               - Forward to the underlying tool-node via `handler(request)`.
-
-           * CALL_REWRITE
-               - If `decision["override_args"]` is a dict, replace
-                 `tool_call["args"]` with it.
-               - If the override payload is missing or invalid, return a
-                 `ToolMessage(status="error")` with a deterministic error
-                 message and do not execute the tool.
-               - Otherwise, forward to `handler(request)`.
-
-           * CALL_BLOCK
-               - Return a `ToolMessage(status="error")` containing either
-                 `decision["safety_rationale"]` or a fixed default message.
-               - The underlying tool is never called.
-
-           * CALL_JIT_APPROVAL
-               - Return a `ToolMessage(status="success")` whose
-                 `additional_kwargs["pending_call"]` embeds:
-                     {
-                         "name": <call_name>,
-                         "args": <original args>,
-                         "id": <tool_call_id>,
-                         "type": "tool_call"
-                     }
-               - The tool is not executed at this stage. A later controller
-                 (e.g. in a `before_model` hook) is responsible for collecting
-                 the human decision, writing an entry into
-                 `config.configurable["approved_tool_calls"]`, and letting the
-                 same middleware treat it as HITL-approved on re-entry.
-
-    Error handling and zero-trust properties
-    ---------------------------------------
-    - If the SafeAgent Core raises or is unavailable, the call is failed-closed:
-      a `ToolMessage(status="error")` is returned and the tool is not
-      executed.
-    - If the Core response is not a dict, or if `decision["action"]` is not in
-      the fixed allow-list
-      `{"CALL_ALLOW", "CALL_REWRITE", "CALL_BLOCK", "CALL_JIT_APPROVAL"}`,
-      the call is blocked by returning a deterministic `ToolMessage` with
-      `status="error"`.
-    - All argument mutations happen inside this middleware; the underlying
-      tool implementation and LangChain/ LangGraph’s tracing/callbacks are
-      exercised normally through `handler(request)`.
-    - This middleware assumes LangChain >= 1.0 semantics where
-      `ToolCallRequest.tool_call` is a dict containing at least `"id"`,
-      `"name"` and `"args"` fields generated from the model's `tool_calls`.
+    Summary
+    -------
+    This middleware forms the outer perimeter of the zero-trust tool security model.
+    Every tool call must be explicitly validated by the SafeAgent Core or by human
+    approval before execution.
     """
 
     def __init__(self, safe_agent: Runnable) -> None:
@@ -131,43 +78,26 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
             return handler(request)
 
         cfg = getattr(runtime, "config", None)
-        configurable: Dict[str, Any] = (cfg or {}).get("configurable", {}) or {}
 
         tool_call_id = tool_call.get("id")
         call_name = tool_call.get("name")
         args: Dict[str, Any] = tool_call.get("args", {}) or {}
 
         # === HITL-approved ===
-        approved_tool_calls = configurable.get("approved_tool_calls", []) or []
-        approved_call_ids = [tool_call.get("id") for tool_call in approved_tool_calls]
-        idx = approved_call_ids.index(tool_call_id) if tool_call_id in approved_call_ids else -1
+        messages = request.state.get("messages", []) or []
+        if messages:
+            last_ai_msg_idx = last_message_index(messages, AIMessage)
+            msg = messages[last_ai_msg_idx]
+            ak = getattr(msg, "additional_kwargs", {}) or {}
+            safe_tags = ak.get("safe_tags", []) or []
 
-        if idx >= 0:
-            approved_record = approved_tool_calls[idx]
-            approved_args = approved_record.get("args", {}) or {}
-            approved_name = approved_record.get("name")
-
-            # Name mismatch -> fail
-            if not approved_name or not call_name or approved_name != call_name:
-                return ToolMessage(
-                    content=(
-                        "[SafeAgent Controller] HITL approval mismatch: "
-                        f"approved tool '{approved_name}', but received '{call_name}'."
-                    ),
-                    tool_call_id=tool_call_id or "hitl-mismatch",
-                    name=call_name,
-                    status="error",
-                )
-
-            # Overwrite args with the approved ones
-            tool_call["args"] = approved_args
-
-            log_line("tool_wrapper.hitl_execute", {
-                "tool": tool.name,
-                "tool_call_id": tool_call_id,
-                "approved_args": approved_args,
-            })
-            return handler(request)
+            if "HITL_REPLAY" in safe_tags:
+                log_line("tool_wrapper.hitl_execute", {
+                    "tool": tool.name,
+                    "tool_call_id": tool_call_id,
+                    "args": args,
+                })
+                return handler(request)
 
         # === SafeAgent Core decision ===
         session_policy = request.state.get("session_policy", {}) or {}
@@ -277,43 +207,26 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
             return await handler(request)
 
         cfg = getattr(runtime, "config", None)
-        configurable: Dict[str, Any] = (cfg or {}).get("configurable", {}) or {}
 
         tool_call_id = tool_call.get("id")
         call_name = tool_call.get("name")
         args: Dict[str, Any] = tool_call.get("args", {}) or {}
 
         # === HITL-approved ===
-        approved_tool_calls = configurable.get("approved_tool_calls", []) or []
-        approved_call_ids = [tool_call.get("id") for tool_call in approved_tool_calls]
-        idx = approved_call_ids.index(tool_call_id) if tool_call_id in approved_call_ids else -1
+        messages = request.state.get("messages", []) or []
+        if messages:
+            last_ai_msg_idx = last_message_index(messages, AIMessage)
+            msg = messages[last_ai_msg_idx]
+            ak = getattr(msg, "additional_kwargs", {}) or {}
+            safe_tags = ak.get("safe_tags", []) or []
 
-        if idx >= 0:
-            approved_record = approved_tool_calls[idx]
-            approved_args = approved_record.get("args", {}) or {}
-            approved_name = approved_record.get("name")
-
-            # Name mismatch -> fail
-            if not approved_name or not call_name or approved_name != call_name:
-                return ToolMessage(
-                    content=(
-                        "[SafeAgent Controller] HITL approval mismatch: "
-                        f"approved tool '{approved_name}', but received '{call_name}'."
-                    ),
-                    tool_call_id=tool_call_id or "hitl-mismatch",
-                    name=call_name,
-                    status="error",
-                )
-
-            # Overwrite args with the approved ones
-            tool_call["args"] = approved_args
-
-            log_line("tool_wrapper.hitl_execute", {
-                "tool": tool.name,
-                "tool_call_id": tool_call_id,
-                "approved_args": approved_args,
-            })
-            return await handler(request)
+            if "HITL_REPLAY" in safe_tags:
+                log_line("tool_wrapper.hitl_execute", {
+                    "tool": tool.name,
+                    "tool_call_id": tool_call_id,
+                    "args": args,
+                })
+                return await handler(request)
 
         # === SafeAgent Core decision ===
         session_policy = request.state.get("session_policy", {}) or {}

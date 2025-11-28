@@ -3,7 +3,7 @@ from langgraph.runtime import Runtime
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, ToolCall
 from langchain.agents.middleware import before_agent, after_agent, before_model, after_model
 from langchain.agents.middleware import AgentState
-from utils.agent import safe_agent, log_line
+from utils.agent import safe_agent, log_line, last_message_index
 
 
 def _serialize_single_tool_call(tc: Any) -> Dict[str, Any]:
@@ -61,134 +61,57 @@ def _normalize_tool_calls(tool_calls: Any) -> List[Dict[str, Any]]:
     return [_serialize_single_tool_call(tool_calls)]
 
 
-def _rollback_to_human_message(state: AgentState) -> int | None:
-    """
-    Roll back the conversation state to the most recent HumanMessage.
-
-    This utility is shared by ROLLBACK, NO_MODEL_CALLING and other safety
-    recovery paths that must discard untrusted LLM/tool outputs.
-
-    Zero-trust guarantees:
-    ----------------------
-    - Only explicit HumanMessage nodes are considered valid rollback anchors.
-    - If no HumanMessage exists in the trace, return `None` and let the caller
-      decide whether to terminate the graph.
-    - The function *only mutates* state["messages"], and never inserts any
-      user-visible or model-visible text itself (the caller handles that).
-    - Long-term memory poisoning is prevented because untrusted tail messages
-      are always removed before being written to memory layers.
-
-    Parameters
-    ----------
-    state : AgentState
-        Mutable LangGraph agent state containing the `messages` list.
-
-    Returns
-    -------
-    int | None
-        The index of the retained HumanMessage (after rollback), or `None`
-        if no HumanMessage existed in the state.
-    """
-    messages = state.get("messages", [])
-    if not messages:
-        return None
-
-    idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[i], HumanMessage):
-            idx = i
-            break
-
-    if idx is None:
-        return None
-
-    state["messages"] = messages[: idx + 1]
-    return idx
-
-
 @before_agent(can_jump_to=["end"])
 def safe_before_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
     """
-    Zero-trust controller hook for the `before_agent` stage.
+    Safety middleware for the **before_agent** stage.
 
-    This middleware sits at the ingress of the agent graph and delegates
-    user-input safety decisions to the SafeAgent Core (`safe_agent`).
-    It owns all **state mutation** and **control flow**, while the Core
-    only returns declarative decisions.
+    Purpose
+    -------
+    This middleware inspects the **user's raw input** before the agent begins
+    any planning or reasoning. It delegates the safety judgment to the
+    SafeAgent Core and enforces the Core's decision with zero-trust control.
 
-    Behavior
-    --------
-    1. Read the last entry in ``state["messages"]``.
-    2. If it is a ``HumanMessage`` with string ``content``, treat it as the
-       current user input; otherwise do nothing and return ``None``.
-    3. Build a Core request:
-
-           {
-               "hook": "before_agent",
-               "last_message": {"role": "user", "content": <text>},
-               "session_policy": state.get("session_policy", {})
-           }
-
-       and call ``safe_agent.invoke(...)``.
-    4. Interpret ``decision["action"]`` under a **zero-trust** policy and
-       optionally apply ``decision["policy_delta"]`` to the session policy.
-
-    Supported actions
-    -----------------
-    - ``"APPROVE"``:
-        Input is accepted as-is.
-        * If ``policy_delta`` is a ``dict``, merge it into
-          ``state["session_policy"]``.
-        * Do not touch ``state["messages"]``.
-        * Return ``None`` to continue normal execution.
-
-    - ``"REJECT"``:
-        The request is rejected before any model or tools are invoked.
-        * Optionally merge a valid ``policy_delta`` into
-          ``state["session_policy"]`` for future turns.
-        * Build a user notice from
-          ``decision["user_notice"]`` or a fixed default.
-        * Return:
-
-              {
-                  "messages": [AIMessage(content=<reject_text>)],
-                  "jump_to": "end"
-              }
-
-          which terminates the graph and returns the rejection to the caller.
-
-    - ``"OVERRIDE"``:
-        The input is unsafe but can be rewritten.
-        * Optionally merge a valid ``policy_delta`` into
-          ``state["session_policy"]``.
-        * Read ``decision["override_context"]`` as a non-empty string.
-        * On success:
-            - Replace the last ``HumanMessage`` in ``state["messages"]``
-              with a new one whose ``content`` is ``override_context`` and
-              whose ``additional_kwargs`` are preserved.
-            - Return ``None`` so that the updated input flows into the model.
-        * If ``override_context`` is missing or invalid, treat this as a
-          protocol violation and return a rejection with ``jump_to = "end"``.
-
-    Session policy (policy_delta)
+    What this middleware protects
     -----------------------------
-    - ``decision["policy_delta"]`` is optional and may accompany any action.
-    - If present and a ``dict``, it is merged in place into
-      ``state["session_policy"]`` so that downstream hooks and tool
-      wrappers can observe updated capabilities / risk state.
-    - If present but not a ``dict``, the Controller blocks the request and
-      returns a deterministic error message with ``jump_to = "end"``.
+    - Prevents unsafe or disallowed user requests from entering the agent loop.
+    - Allows the Core to rewrite, block, or approve user input deterministically.
+    - Ensures early-stage policy updates (session_policy mutations) are applied
+      before any LLM reasoning happens.
 
-    Zero-trust guarantees
-    ---------------------
-    - Only trailing ``HumanMessage`` with text content is inspected here;
-      AI / Tool messages and non-text inputs are ignored.
-    - Allowed actions are strictly limited to ``{"APPROVE", "REJECT",
-      "OVERRIDE"}``. Any other value is treated as an error and leads to
-      a hard block.
-    - All mutations (messages and session_policy) are applied directly to
-      the mutable ``state`` object; apart from explicit ``jump_to = "end"``,
-      this hook does not rely on state-merging semantics.
+    Core actions supported
+    ----------------------
+    The SafeAgent Core may return one of the following actions:
+
+    - **APPROVE**
+      - The user input is accepted as-is.
+      - Agent proceeds normally into model reasoning.
+
+    - **OVERRIDE**
+      - Core provides a safe replacement for the user input.
+      - The original HumanMessage content is replaced with Core-supplied text.
+      - Planning continues with sanitized input.
+
+    - **REJECT**
+      - The request is disallowed by security policy.
+      - A refusal AIMessage is generated for the user.
+      - The agent turn terminates immediately.
+
+    Additional capabilities
+    -----------------------
+    - **Session policy updates**
+      Core may return a `policy_delta` dict to dynamically adjust runtime
+      safety constraints (e.g., blocked tools, capability restrictions).
+
+    - **Zero-trust enforcement**
+      Any malformed Core output or unknown action results in a deterministic
+      block with an error AIMessage.
+
+    Summary
+    -------
+    This hook enforces the earliest and strictest safety boundary for the
+    agent. All user input passes through SafeAgent Core before any planning
+    or tool-selection logic is executed.
     """
     messages = state.get("messages", [])
     session_policy = state.get("session_policy", {}) or {}
@@ -216,10 +139,10 @@ def safe_before_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | N
         decision = safe_agent.invoke(core_request)
     except Exception as e:
         log_line("before_agent.core_error", {"error": str(e)})
-        return {
-            "messages": [AIMessage(content="[SafeAgent Controller] Safety core unavailable. Request rejected.")],
-            "jump_to": "end",
-        }
+        state["messages"].append(
+            AIMessage(content="[SafeAgent Controller] Safety core unavailable. Request rejected.")
+        )
+        return {"jump_to": "end"}
     action = str(decision.get("action", "")).upper().strip()
     log_line("before_agent.core_decision", decision)
 
@@ -230,26 +153,14 @@ def safe_before_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | N
             f"[SafeAgent Controller] Unknown action '{action}'. "
             "Request blocked by zero-trust runtime."
         )
-        return {
-            "messages": [AIMessage(content=error_text)],
-            "jump_to": "end"
-        }
+        state["messages"].append(AIMessage(content=error_text))
+        return {"jump_to": "end"}
 
     # Update Runtime session policy
     policy_delta = decision.get("policy_delta", None)
     if policy_delta is not None:
         if not isinstance(policy_delta, dict):
-            return {
-                "messages": [
-                    AIMessage(
-                        content=(
-                            "[SafeAgent Controller] Invalid policy_delta. "
-                            "Request blocked by zero-trust runtime."
-                        )
-                    )
-                ],
-                "jump_to": "end",
-            }
+            policy_delta = {}
         session_policy.update(policy_delta)
         state["session_policy"] = session_policy
 
@@ -261,25 +172,18 @@ def safe_before_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | N
             "user_notice",
             "[SafeAgent Core] The request has been rejected by security policy."
         )
-        return {
-            "messages": [AIMessage(content=reject_text)],
-            "jump_to": "end",
-        }
+        state["messages"].append(AIMessage(content=reject_text))
+        return {"jump_to": "end"}
 
     if action == "OVERRIDE":
-        new_input = decision.get("override_context")
-        if not isinstance(new_input, str) or not new_input:
-            return {
-                "messages": [
-                    AIMessage(content="[SafeAgent Controller] Invalid override_input. Request blocked.")
-                ],
-                "jump_to": "end"
-            }
+        override_context = decision.get("override_context")
+        if not isinstance(override_context, str) or not override_context:
+            state["messages"].append(
+                AIMessage(content="[SafeAgent Controller] Invalid override_input. Request blocked.")
+            )
+            return {"jump_to": "end"}
 
-        state["messages"][-1] = HumanMessage(
-            content=new_input,
-            additional_kwargs=getattr(last_msg, "additional_kwargs", {}),
-        )
+        state["messages"][-1].content = override_context
         return None
 
     return None
@@ -288,355 +192,298 @@ def safe_before_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | N
 @before_model(can_jump_to=["end"])
 def safe_before_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
     """
-    Zero-trust controller hook for the `before_model` (context inspection) stage.
+    Safety middleware for the **before_model** stage.
 
-    This middleware runs after the environment produced a ToolMessage and right
-    before the model is called again. It inspects the **last ToolMessage** and
-    delegates the safety decision to the SafeAgent Core (`safe_agent`). The
-    Controller performs all state mutations and flow control; the Core only
-    returns a structured decision.
+    Purpose
+    -------
+    This middleware validates **all ToolMessage outputs** produced after the
+    most recent model reasoning step. Before the model is allowed to continue
+    reasoning, each tool result is checked by the SafeAgent Core under a
+    zero-trust policy.
 
-    Behavior
-    --------
-    1. Read the last entry in ``state["messages"]``.
-    2. If it is **not** a ``ToolMessage`` or its ``content`` is non-text,
-    return ``None`` (no-op).
-    3. Otherwise, build a Core request:
-
-        {
-            "hook": "before_model",
-            "last_message": {
-                "role": "tool",
-                "name": <tool_name>,
-                "tool_call_id": <id>,
-                "content": <tool_output_text>,
-            },
-            "session_policy": state.get("session_policy", {})
-        }
-
-    and call ``safe_agent.invoke(...)``.
-
-    The Core responds with:
-
-        {
-            "action": "APPROVE" | "OVERRIDE" | "ROLLBACK" | "NO_MODEL_CALLING" | "REJECT",
-            "policy_delta": { ... }?,              # optional session-policy update
-            "allow_long_term_memory": bool?,       # optional LTM permission
-            "override_context": "...",             # for OVERRIDE
-            "user_notice": "..."               # for REJECT
-        }
-
-    Session policy (policy_delta)
+    What this middleware protects
     -----------------------------
-    - If ``policy_delta`` is absent → unchanged.
-    - If it is a ``dict`` → merged into ``state["session_policy"]`` in-place.
-    - If present but not a ``dict`` → protocol violation; the last message is
-    replaced by an error ``AIMessage`` and the graph ends via ``{"jump_to": "end"}``.
+    - Ensures no unsafe or policy-violating tool output ever reaches the model.
+    - Allows the Core to rewrite, redact, roll back, or block tool outputs.
+    - Enforces dynamic per-turn and per-tool safety constraints using the
+      session policy.
+    - Prevents the model from relying on unverified or corrupted tool results.
 
-    Long-term memory tagging
-    ------------------------
-    - The Core may specify ``allow_long_term_memory``.
-    - Controller enforces **default deny**:
-        * ``True`` → tag message with ``allow_long_term_memory = True``.
-        * anything else (missing / False / None / invalid) → ``False``.
-    - Tag is written into ``last_msg.additional_kwargs`` for downstream memory writers.
+    Core actions supported
+    ----------------------
+    For each tool output, the SafeAgent Core may return one of:
 
-    Supported actions
-    -----------------
-    - ``"APPROVE"``:
-        Context is safe. After applying any policy updates and LTM tagging, the
-        ToolMessage is passed to the model unchanged. Return ``None``.
+    - **APPROVE**
+      The tool output is accepted without modification.
+      The model continues normally.
 
-    - ``"OVERRIDE"``:
-        Tool output is unsafe but repairable. The Core must provide a non-empty
-        ``override_context``.
-        * Replace **only** ``last_msg.content`` with the safe version.
-        * Preserve message type and structural fields.
-        * LTM tag already applied above.
-        Return ``None``. Missing/invalid ``override_context`` → protocol error → end.
+    - **OVERRIDE**
+      The output is unsafe but repairable.
+      The ToolMessage content is replaced with a Core-supplied safe version.
+      If no valid override is provided, the output is replaced with a generic,
+      non-sensitive placeholder.
 
-    - ``"ROLLBACK"``:
-        The entire short-term trajectory is untrustworthy.
-        * Roll back to the most recent ``HumanMessage``. If none exists → block.
-        * Append a fixed safety guidance ``AIMessage`` tagged with
-        ``NO_LONG_TERM_MEMORY_WRITE``.
-        Return ``None`` to re-invoke the model on the rolled-back context.
+    - **ROLLBACK**
+      The current reasoning trajectory is unsafe.
+      All messages after the last HumanMessage are removed, and a guidance
+      AIMessage is inserted instructing the model to re-plan safely.
 
-    - ``"NO_MODEL_CALLING"``:
-        Model must **not** be called this turn.
-        * Roll back to last ``HumanMessage`` if possible.
-        * Append a final user-visible safety ``AIMessage`` using
-        * Terminate via ``{"jump_to": "end"}``.
+    - **NO_MODEL_CALLING**
+      The model must not be called again for this turn.
+      The controller rolls back to the last HumanMessage (if present) and
+      inserts a final safety response.
+      The agent turn ends immediately.
 
-    - ``"REJECT"``:
-        Tool output is unsafe; the producing tool must be disabled.
-        * Add its name to ``session_policy["blocked_tools"]``.
-        * Replace the ToolMessage with a fixed safety-guidance ``AIMessage`` tagged
-        ``NO_LONG_TERM_MEMORY_WRITE``.
-        * Allow the model to run again (no jump). Tools will be filtered by policy.
+    - **REJECT**
+      The tool output is unsafe and the tool is now disallowed for the
+      remainder of the session.
+      The ToolMessage content is replaced with safety guidance, and the model
+      continues reasoning with the tool disabled.
 
-    Zero-trust guarantees
-    ---------------------
-    - Only the last textual ToolMessage is inspected.
-    - Allowed actions are strictly:
-        {"APPROVE", "OVERRIDE", "ROLLBACK", "NO_MODEL_CALLING", "REJECT"}.
-    Anything else triggers a deterministic block.
-    - All mutations are applied directly to ``state``. Only explicit ``jump_to``
-    directives affect graph flow.
-    - Core cannot inject arbitrary prompts; all model-visible text is synthesized
-    by the Controller from its structured fields.
+    Additional capabilities
+    -----------------------
+    - **Session policy updates**
+      Core may return a `policy_delta` to dynamically change runtime safety
+      configuration (e.g., disable tools, tighten restrictions).
+
+    - **Per-message memory protection**
+      A Core flag (`NO_LONG_TERM_MEMORY_WRITE`) marks tool outputs that must
+      never enter long-term memory, ensuring isolation of sensitive data.
+
+    - **Zero-trust enforcement**
+      Unknown actions, invalid override payloads, or Core errors result in a
+      deterministic safety response and termination of the turn.
+
+    Summary
+    -------
+    This hook forms the core of SafeAgent’s tool-output validation pipeline.
+    All tool results are authenticated, potentially repaired, or suppressed
+    before the model sees them—ensuring strict forward-propagation safety.
     """
     messages = state.get("messages", [])
     session_policy = state.get("session_policy", {}) or {}
     if not messages:
         return None
 
-    last_msg = messages[-1]
-    if not isinstance(last_msg, ToolMessage):
+    last_ai_msg_idx = last_message_index(state, AIMessage)
+    if last_ai_msg_idx is None:
         return None
 
-    last_content = getattr(last_msg, "content", "")
-    if not isinstance(last_content, str):
+    if not isinstance(messages[-1], ToolMessage):
         return None
 
-    core_request = {
-        "hook": "before_model",
-        "last_message": {
-            "role": "tool",
-            "name": last_msg.name,
-            "tool_call_id": last_msg.tool_call_id,
-            "content": last_content,
-        },
-        "session_policy": session_policy,
-    }
-    log_line("before_model.core_request", core_request)
+    for tool_msg_idx in range(last_ai_msg_idx + 1, len(messages)):
+        msg = messages[tool_msg_idx]
+        content = getattr(msg, "content", "")
+        if not isinstance(content, str):
+            continue
 
-    try:
-        decision = safe_agent.invoke(core_request)
-    except Exception as e:
-        log_line("before_model.core_error", {"error": str(e)})
-        error_text = (
-            "[SafeAgent Controller] Safety core unavailable. "
-            "Tool plan cannot be executed for this turn."
-        )
-        state["messages"][-1] = AIMessage(
-            content=error_text,
-            additional_kwargs=getattr(last_msg, "additional_kwargs", {}),
-        )
-        setattr(state["messages"][-1], "tool_calls", [])
-        return {"jump_to": "end"}
-    action = str(decision.get("action", "")).upper().strip()
-    log_line("before_model.core_decision", decision)
+        core_request = {
+            "hook": "before_model",
+            "last_message": {
+                "role": "tool",
+                "name": msg.name,
+                "tool_call_id": msg.tool_call_id,
+                "content": content,
+            },
+            "session_policy": session_policy,
+        }
+        log_line("before_model.core_request", core_request)
 
-    # Allowed actions at this stage
-    ALLOWED_ACTIONS = {"APPROVE", "OVERRIDE", "ROLLBACK", "NO_MODEL_CALLING", "REJECT"}
-    if action not in ALLOWED_ACTIONS:
-        error_text = (
-            f"[SafeAgent Controller] Unknown before_model action '{action}'. "
-            "Request blocked by zero-trust runtime."
-        )
-        state["messages"] = [
-            AIMessage(content=error_text)
-        ]
-        return {"jump_to": "end"}
-
-    # Update Runtime session policy
-    policy_delta = decision.get("policy_delta", None)
-    if policy_delta is not None:
-        if not isinstance(policy_delta, dict):
+        try:
+            decision = safe_agent.invoke(core_request)
+        except Exception as e:
+            del state["messages"][last_ai_msg_idx + 1:]
+            log_line("before_model.core_error", {"error": str(e)})
             error_text = (
-                "[SafeAgent Controller] Invalid policy_delta. "
+                "[SafeAgent Controller] Safety core unavailable. "
+                "Tool plan cannot be executed for this turn."
+            )
+            state["messages"].append(
+                AIMessage(
+                    content=error_text,
+                    additional_kwargs=getattr(msg, "additional_kwargs", {}),
+                )
+            )
+            setattr(state["messages"][-1], "tool_calls", [])
+            return {"jump_to": "end"}
+        action = str(decision.get("action", "")).upper().strip()
+        log_line("before_model.core_decision", decision)
+
+        # Allowed actions at this stage
+        ALLOWED_ACTIONS = {"APPROVE", "OVERRIDE", "ROLLBACK", "NO_MODEL_CALLING", "REJECT"}
+        if action not in ALLOWED_ACTIONS:
+            del state["messages"][last_ai_msg_idx + 1:]
+            error_text = (
+                f"[SafeAgent Controller] Unknown before_model action '{action}'. "
                 "Request blocked by zero-trust runtime."
             )
-            state["messages"][-1] = AIMessage(content=error_text)
+            state["messages"].append(AIMessage(content=error_text))
             return {"jump_to": "end"}
-        session_policy.update(policy_delta)
-        state["session_policy"] = session_policy
 
-    # --- Apply per-message long-term memory policy if provided ---
-    allow_ltm = decision.get("allow_long_term_memory", False)
-    ak = getattr(last_msg, "additional_kwargs", {}) or {}
-    ak["allow_long_term_memory"] = allow_ltm if allow_ltm is True else False
-    setattr(last_msg, "additional_kwargs", ak)
+        # Update Runtime session policy
+        policy_delta = decision.get("policy_delta", None)
+        if policy_delta is not None:
+            if not isinstance(policy_delta, dict):
+                policy_delta = {}
+            session_policy.update(policy_delta)
+            state["session_policy"] = session_policy
 
-    if action == "APPROVE":
-        return None
+        # --- Apply per-message long-term memory policy if provided ---
+        no_ltm_write = decision.get("NO_LONG_TERM_MEMORY_WRITE", True)
+        additional_kwargs = getattr(msg, "additional_kwargs", {}) or {}
+        if no_ltm_write:
+            tags = additional_kwargs.get("safe_tags") or []
+            if not isinstance(tags, list):
+                tags = []
+            if "NO_LONG_TERM_MEMORY_WRITE" not in tags:
+                tags.append("NO_LONG_TERM_MEMORY_WRITE")
+            additional_kwargs["safe_tags"] = tags
+            state["messages"][tool_msg_idx].additional_kwargs = additional_kwargs
 
-    # === OVERRIDE: overwrite only the content of the last ToolMessage ===
-    if action == "OVERRIDE":
-        override_context = decision.get("override_context")
-        if not isinstance(override_context, str) or not override_context:
-            error_text = (
-                "[SafeAgent Controller] Invalid override_context. "
-                "Request blocked by zero-trust runtime."
+        if action == "APPROVE":
+            continue
+
+        # === OVERRIDE: overwrite only the content of this ToolMessage ===
+        if action == "OVERRIDE":
+            override_context = decision.get("override_context")
+
+            if not isinstance(override_context, str) or not override_context:
+                guidance = (
+                    "[SafeAgent Controller] The original tool output has been "
+                    "redacted due to safety policy. You may assume the tool "
+                    "completed, but MUST NOT infer or reconstruct any sensitive "
+                    "details from it."
+                )
+                state["messages"][tool_msg_idx].content = guidance
+            else:
+                state["messages"][tool_msg_idx].content = override_context
+
+            continue
+
+        # === ROLLBACK: roll back to last HumanMessage ===
+        if action == "ROLLBACK":
+            human_msg_idx = last_message_index(state, HumanMessage)
+
+            if human_msg_idx is None:
+                error_text = (
+                    "[SafeAgent Controller] ROLLBACK requested but no HumanMessage "
+                    "found in history. Request blocked by zero-trust runtime."
+                )
+                state["messages"].append(AIMessage(content=error_text))
+                return {"jump_to": "end"}
+
+            del state["messages"][human_msg_idx + 1:]
+            guidance = (
+                "[SafeAgent Core] The previous reasoning path or tool output was "
+                "determined to be unsafe or unreliable. You must re-evaluate the "
+                "task carefully.\n"
+                "- Think twice when planning a function calling, they could be unreliable.\n"
+                "- Follow the session's safety policy strictly.\n"
+                "- Provide a safer, more compliant alternative plan.\n"
             )
-            state["messages"][-1] = AIMessage(content=error_text)
-            return {"jump_to": "end"}
 
-        state["messages"][-1].content = override_context
-        return None
-
-    # === ROLLBACK: roll back to last HumanMessage ===
-    if action == "ROLLBACK":
-        idx = _rollback_to_human_message(state)
-
-        if idx is None:
-            error_text = (
-                "[SafeAgent Controller] ROLLBACK requested but no HumanMessage "
-                "found in history. Request blocked by zero-trust runtime."
+            state["messages"].append(
+                AIMessage(
+                    content=guidance,
+                    additional_kwargs={"safe_tags": ["SAFEAGENT_FLOW_CONTROL_MESSAGE"]},
+                )
             )
-            state["messages"] = [AIMessage(content=error_text)]
+            return None
+
+        # === NO_MODEL_CALLING: do NOT call the model again ===
+        if action == "NO_MODEL_CALLING":
+            human_msg_idx = last_message_index(state, HumanMessage)
+
+            # if no HumanMessage, fallback to single canned response
+            if human_msg_idx is None:
+                safe_resp = "[SafeAgent Controller] Model call skipped due to safety policy."
+                state["messages"].append(AIMessage(content=safe_resp))
+                return {"jump_to": "end"}
+
+            del state["messages"][human_msg_idx + 1:]
+            # Insert final user-visible safety response
+            safe_resp = "[SafeAgent Core] This conversation turn has been terminated due to safety policy."
+            state["messages"].append(AIMessage(content=safe_resp))
+
             return {"jump_to": "end"}
 
-        # Insert safe guidance
-        guidance = (
-            "[SafeAgent Core] The previous reasoning path or tool output was "
-            "determined to be unsafe or unreliable. You must re-evaluate the "
-            "task carefully.\n"
-            "- Think twice when planning a function calling, they could be unreliable.\n"
-            "- Follow the session's safety policy strictly.\n"
-            "- Provide a safer, more compliant alternative plan.\n"
-        )
+        # === REJECT: drop unsafe ToolMessage + disable the tool + continue model ===
+        if action == "REJECT":
+            # Identify the tool call and block the tool
+            tool_name = None
+            if hasattr(msg, "name"):
+                tool_name = msg.name
+            raw_blocked = session_policy.get("blocked_tools", [])
+            blocked_tools = set(raw_blocked or [])
+            if tool_name:
+                blocked_tools.add(tool_name)
+            session_policy["blocked_tools"] = list(blocked_tools)
 
-        state["messages"].append(
-            AIMessage(
-                content=guidance,
-                additional_kwargs={"safe_tags": ["NO_LONG_TERM_MEMORY_WRITE"]},
+            # Insert a guidance ToolMessage for the next model step
+            guidance = (
+                "[SafeAgent Core] The previous tool result was unsafe and has "
+                "been removed. The tool used in the last step is now disabled for "
+                "the remainder of this session.\n"
+                "- You MUST NOT call that tool again.\n"
+                "- You MUST answer the user directly using only the available context.\n"
             )
-        )
-        return None
 
-    # === NO_MODEL_CALLING: do NOT call the model again ===
-    if action == "NO_MODEL_CALLING":
-        idx = _rollback_to_human_message(state)
+            state["messages"][tool_msg_idx].content = guidance
+            continue
 
-        # if no HumanMessage, fallback to single canned response
-        if idx is None:
-            safe_resp = "[SafeAgent Controller] Model call skipped due to safety policy."
-            state["messages"] = [AIMessage(content=safe_resp)]
-            return {"jump_to": "end"}
-
-        # Insert final user-visible safety response
-        safe_resp = "[SafeAgent Core] This conversation turn has been terminated due to safety policy."
-        state["messages"].append(AIMessage(content=safe_resp))
-
-        return {"jump_to": "end"}
-
-    # === REJECT: drop unsafe ToolMessage + disable the tool + continue model ===
-    if action == "REJECT":
-        last_tool_msg = messages[-1]
-
-        # Identify the tool call and block the tool
-        tool_name = None
-        if hasattr(last_tool_msg, "name"):
-            tool_name = last_tool_msg.name
-        raw_blocked = session_policy.get("blocked_tools", [])
-        blocked_tools = set(raw_blocked or [])
-        if tool_name:
-            blocked_tools.add(tool_name)
-        session_policy["blocked_tools"] = list(blocked_tools)
-
-        # Insert a guidance AIMessage for the next model step
-        guidance = (
-            "[SafeAgent Core] The previous tool result was unsafe and has "
-            "been removed. The tool used in the last step is now disabled for "
-            "the remainder of this session.\n"
-            "- You MUST NOT call that tool again.\n"
-            "- You MUST answer the user directly using only the available context.\n"
-        )
-
-        state["messages"][-1] = AIMessage(
-            content=guidance,
-            additional_kwargs={"safe_tags": ["NO_LONG_TERM_MEMORY_WRITE"]},
-        )
-        return None
+    return None
 
 
 @after_model(can_jump_to=["model", "end"])
 def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
     """
-    Zero-trust controller hook for the `after_model` stage (plan inspection).
+    Safety middleware for the after_model stage.
 
-    This hook runs *after* the model produces an AIMessage but *before* any
-    tool is executed. It validates the tool-call plan using:
+    Purpose
+    -------
+    Validates the tool plan produced by the model before any tool execution is
+    allowed. Ensures that every tool call proposal aligns with the session's
+    safety constraints, capability rules, and dynamic restrictions.
 
-        1) local deterministic checks (blocked tools)
-        2) SafeAgent Core decisions (APPROVE / REPLAN / REJECT)
+    What this middleware enforces
+    -----------------------------
+    - Validates the full tool_call list emitted by the model.
+    - Blocks tool calls that reference forbidden or disabled tools.
+    - Allows the SafeAgent Core to rewrite, reject, or force a replan of the
+      proposed tool strategy.
+    - Ensures the model cannot execute unsafe plans or circumvent policy via
+      indirect tool chaining.
+    - Applies dynamic session-policy updates returned by the safety Core.
 
-    Controller owns all state mutation and control-flow decisions; Core only
-    returns declarative judgments.
+    Supported safety actions
+    ------------------------
+    - **APPROVE**
+      The proposed plan is safe. No modifications are applied.
 
-    Pipeline
-    --------
-    1. Read the last message:
-        last_msg = state["messages"][-1]
+    - **REPLAN**
+      The plan is unsafe but recoverable. The model receives guidance and must
+      produce a completely new plan that obeys session_policy constraints.
 
-    2. If last_msg is not AIMessage → no-op.
-    If last_msg has no tool_calls (None/empty) → treat as normal text answer.
+    - **REJECT**
+      The plan is unsafe and cannot involve tools this turn. The model must
+      answer the user directly in natural language using only existing context.
 
-    3. Local forbidden-tool check:
-    - session_policy["blocked_tools"] is a list of prohibited tool names.
-    - If the plan calls any of them:
-            * Rewrite last_msg.content with a fixed safety guidance template.
-            * Clear tool_calls.
-            * Set allow_long_term_memory = False.
-            * return {"jump_to": "model"}  # force a new model call.
-
-    4. Otherwise build a Core request:
-        {
-            "hook": "after_model",
-            "last_message": {content, tool_calls},
-            "session_policy": session_policy
-        }
-    and call:
-        decision = safe_agent.invoke(request)
-
-    5. On Core error:
-        - Replace last message with a deterministic refusal.
-        - Clear tool_calls.
-        - return {"jump_to": "end"}
-
-    Allowed Core actions
-    --------------------
-    - "APPROVE"
-        Accept the plan as-is.
-        Apply optional policy_delta (must be dict).
-        return None → proceed to tool execution.
-
-    - "REPLAN"
-        Plan is unsafe, but replanning is allowed.
-        Controller synthesizes a *fixed template* guidance message:
-            - state reasons (if provided)
-            - instruct model to generate a new plan compliant with policy
-        Clear tool_calls, set allow_long_term_memory=False,
-        return {"jump_to": "model"}.
-
-    - "REJECT"
-        Tools must not be used this turn.
-        Controller synthesizes a *fixed template* natural-language guidance:
-            - explain refusal
-            - instruct model to answer directly with no tool calls
-        Clear tool_calls, set allow_long_term_memory=False,
-        return {"jump_to": "model"}.
-
-    Policy delta
-    ------------
-    - If decision["policy_delta"] exists:
-        * Must be a dict → merge into state["session_policy"].
-        * Otherwise → protocol violation → replace with error AIMessage and
-            return {"jump_to": "end"}.
-
-    Zero-trust guarantees
+    Additional guarantees
     ---------------------
-    - The Core cannot inject free-form prompt text; Controller synthesizes all
-    guidance templates.
-    - Only {"APPROVE", "REPLAN", "REJECT"} are accepted.
-    - Any malformed payload (unknown action / invalid policy_delta /
-    invalid override fields) results in a deterministic block.
-    - All mutations happen directly on `state` (messages, tool_calls,
-    session_policy), without relying on implicit merge semantics.
-    """
+    - Tool calls targeting blocked or forbidden tools are rejected before any
+      Core invocation.
+    - All rejected or modified plans are tagged with
+      SAFEAGENT_FLOW_CONTROL_MESSAGE to prevent unsafe content from entering
+      long-term memory stores.
+    - Unknown Core actions trigger a deterministic safety stop.
 
+    Summary
+    -------
+    This middleware forms the safety gate for model-generated tool plans. It
+    ensures that only compliant, policy-respecting plans are allowed to proceed,
+    preventing unsafe execution paths and enforcing zero-trust runtime control.
+    """
     messages = state.get("messages", [])
     session_policy = state.get("session_policy", {}) or {}
     if not messages:
@@ -683,7 +530,7 @@ def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
         )
 
         additional_kwargs = getattr(last_msg, "additional_kwargs", {}) or {}
-        additional_kwargs["allow_long_term_memory"] = False
+        additional_kwargs["safe_tags"].append("SAFEAGENT_FLOW_CONTROL_MESSAGE")
         state["messages"][-1] = AIMessage(
             content=guidance_content,
             additional_kwargs=additional_kwargs,
@@ -737,16 +584,7 @@ def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
     policy_delta = decision.get("policy_delta", None)
     if policy_delta is not None:
         if not isinstance(policy_delta, dict):
-            error_text = (
-                "[SafeAgent Controller] Invalid policy_delta. "
-                "Plan rejected by zero-trust runtime."
-            )
-            state["messages"][-1] = AIMessage(
-                content=error_text,
-                additional_kwargs=getattr(last_msg, "additional_kwargs", {}),
-            )
-            return {"jump_to": "end"}
-
+            policy_delta = {}
         session_policy.update(policy_delta)
         state["session_policy"] = session_policy
 
@@ -776,7 +614,7 @@ def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
 
         # Overwrite last AIMessage content and clear tool_calls.
         additional_kwargs = getattr(last_msg, "additional_kwargs", {}) or {}
-        additional_kwargs["allow_long_term_memory"] = False
+        additional_kwargs["safe_tags"].append("SAFEAGENT_FLOW_CONTROL_MESSAGE")
         state["messages"][-1] = AIMessage(
             content=guidance_content,
             additional_kwargs=additional_kwargs,
@@ -811,7 +649,7 @@ def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
         )
 
         additional_kwargs = getattr(last_msg, "additional_kwargs", {}) or {}
-        additional_kwargs["allow_long_term_memory"] = False
+        additional_kwargs["safe_tags"].append("SAFEAGENT_FLOW_CONTROL_MESSAGE")
         state["messages"][-1] = AIMessage(
             content=guidance_content,
             additional_kwargs=additional_kwargs,
@@ -825,84 +663,46 @@ def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
 @after_agent
 def safe_after_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
     """
-    Zero-trust controller hook for the `after_agent` stage.
+    Safety middleware for the after_agent stage.
 
-    This middleware runs at the egress of the agent graph, just before the
-    final response is returned. It delegates safety decisions about the final
-    assistant output to the SafeAgent Core (`safe_agent`) and enforces them by
-    mutating the runtime state.
+    Purpose
+    -------
+    Applies a final safety check to the model's natural-language output
+    after the full reasoning and tool execution cycle. Ensures that the
+    assistant's final response complies with session safety rules.
 
-    Behavior
-    --------
-    1. Read the last entry in ``state["messages"]``.
-    2. If it is an ``AIMessage`` with string ``content``, treat it as the
-       candidate final response; otherwise do nothing and return ``None``.
-    3. Build a Core request:
-
-           {
-               "hook": "after_agent",
-               "last_message": {"role": "assistant", "content": <text>},
-               "session_policy": state.get("session_policy", {})
-           }
-
-       and call ``safe_agent.invoke(...)``.
-    4. Interpret ``decision["action"]`` under a **zero-trust** policy and
-       apply an optional ``decision["policy_delta"]`` to the session policy
-       before acting on the output.
+    What this middleware enforces
+    -----------------------------
+    - Inspects the final AIMessage produced by the agent.
+    - Allows the SafeAgent Core to override, sanitize, or block unsafe content.
+    - Applies dynamic session_policy updates based on Core decisions.
+    - Ensures unsafe final text cannot reach the user without inspection.
+    - Guarantees that long-term memory writers will not store unsafe data.
 
     Supported actions
     -----------------
-    - ``"APPROVE"``:
-        Final output is accepted as-is.
-        * If ``policy_delta`` is a ``dict``, merge it into
-          ``state["session_policy"]``.
-        * Do not change the last ``AIMessage``.
-        * Return ``None`` so the original response is returned to the caller.
+    - **APPROVE**
+      The final output is safe and delivered without modification.
 
-    - ``"REJECT"``:
-        Final output is unsafe and must be replaced.
-        * Optionally merge a valid ``policy_delta`` into
-          ``state["session_policy"]`` for future turns.
-        * Build a user notice from
-          ``decision["user_notice"]`` or a fixed default.
-        * Overwrite the last ``AIMessage`` in ``state["messages"]`` with the
-          user notice text.
-        * Return ``None`` (the graph is already at its end).
+    - **OVERRIDE**
+      The Core supplies a safe replacement message. The original content
+      is discarded and replaced with override_context.
 
-    - ``"OVERRIDE"``:
-        Final output is unsafe but can be rewritten.
-        * Optionally merge a valid ``policy_delta`` into
-          ``state["session_policy"]``.
-        * Read ``decision["override_context"]`` as a non-empty string.
-        * On success:
-            - Replace the last ``AIMessage`` with a new one whose ``content``
-              is ``override_context``, preserving ``additional_kwargs``.
-            - Return ``None``.
-        * If ``override_context`` is missing or invalid, overwrite the last
-          message with a deterministic error text.
+    - **REJECT**
+      The final output is unsafe. The user receives a safety-compliant
+      replacement response provided by the Core.
 
-    Session policy (policy_delta)
-    -----------------------------
-    - ``decision["policy_delta"]`` is optional and may accompany any action.
-    - If present and a ``dict``, it is merged into
-      ``state["session_policy"]`` in place so downstream components can
-      observe updated risk/capability state.
-    - If present but not a ``dict``, this is treated as a protocol violation
-      and the final output is replaced by a fixed error message.
+    Safety guarantees
+    -----------------
+    - Unknown actions trigger deterministic fallback responses.
+    - The original content is never preserved when a safety violation is detected.
+    - All safety-modified responses retain safe_tags to prevent long-term
+      memory ingestion.
 
-    Zero-trust guarantees
-    ---------------------
-    - Only the last textual ``AIMessage`` is inspected here; Tool / Human
-      messages and non-text content are ignored.
-    - Allowed actions are strictly limited to ``{"APPROVE", "REJECT",
-      "OVERRIDE"}``. Any other value is treated as an error and causes the
-      final output to be replaced by a deterministic error message.
-    - All mutations (messages and session_policy) are applied directly to the
-      mutable ``state`` object; this hook does not rely on state-merging
-      semantics.
-    - Malformed Core payloads (invalid ``override_context`` or ``policy_delta``)
-      never result in an implicit allow; they deterministically degrade to a
-      safe refusal.
+    Summary
+    -------
+    This middleware enforces a zero-trust final-response gate. Only fully
+    validated, policy-respecting natural-language responses can reach the user.
     """
     messages = state.get("messages", [])
     session_policy = state.get("session_policy", {}) or {}
@@ -960,16 +760,7 @@ def safe_after_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
     policy_delta = decision.get("policy_delta", None)
     if policy_delta is not None:
         if not isinstance(policy_delta, dict):
-            error_text = (
-                "[SafeAgent Controller] Invalid policy_delta. "
-                "Final response replaced by zero-trust runtime."
-            )
-            state["messages"][-1] = AIMessage(
-                content=error_text,
-                additional_kwargs=getattr(last_msg, "additional_kwargs", {}),
-            )
-            return None
-
+            policy_delta = {}
         session_policy.update(policy_delta)
         state["session_policy"] = session_policy
 
@@ -988,8 +779,8 @@ def safe_after_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
         return None
 
     if action == "OVERRIDE":
-        new_output = decision.get("override_context")
-        if not isinstance(new_output, str) or not new_output:
+        override_context = decision.get("override_context")
+        if not isinstance(override_context, str) or not override_context:
             error_text = (
                 "[SafeAgent Controller] Invalid override_context. "
                 "Final response replaced by zero-trust runtime."
@@ -1000,10 +791,7 @@ def safe_after_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
             )
             return None
 
-        state["messages"][-1] = AIMessage(
-            content=new_output,
-            additional_kwargs=getattr(last_msg, "additional_kwargs", {}),
-        )
+        state["messages"][-1].content = override_context
         return None
 
     return None

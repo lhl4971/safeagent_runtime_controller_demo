@@ -102,6 +102,10 @@ def build_ui():
             inputs=[pending_calls_state, call_decisions_state],
             outputs=[pending_calls_state, call_decisions_state],
         ).then(
+            fn=render_hitl_modal,
+            inputs=pending_calls_state,
+            outputs=[hitl_md, hitl_modal],
+        ).then(
             fn=resume_after_hitl,
             inputs=[chat_state, trace_state, session_id, pending_calls_state, call_decisions_state],
             outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state],
@@ -113,6 +117,10 @@ def build_ui():
             inputs=[pending_calls_state, call_decisions_state],
             outputs=[pending_calls_state, call_decisions_state],
         ).then(
+            fn=render_hitl_modal,
+            inputs=pending_calls_state,
+            outputs=[hitl_md, hitl_modal],
+        ).then(
             fn=resume_after_hitl,
             inputs=[chat_state, trace_state, session_id, pending_calls_state, call_decisions_state],
             outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state],
@@ -123,6 +131,10 @@ def build_ui():
             fn=lambda pending, decisions: record_hitl_decision(pending, decisions, "REJECT"),
             inputs=[pending_calls_state, call_decisions_state],
             outputs=[pending_calls_state, call_decisions_state],
+        ).then(
+            fn=render_hitl_modal,
+            inputs=pending_calls_state,
+            outputs=[hitl_md, hitl_modal],
         ).then(
             fn=resume_after_hitl,
             inputs=[chat_state, trace_state, session_id, pending_calls_state, call_decisions_state],

@@ -25,7 +25,7 @@ async def stream(
             content="[SafeAgent HITL] Applying human decisions for pending tool calls.",
             additional_kwargs={
                 "hitl_call_decisions": decisions_list,
-                "safe_tags": ["NO_LONG_TERM_MEMORY_WRITE"],
+                "safe_tags": ["SAFEAGENT_FLOW_CONTROL_MESSAGE"],
             },
         )
 

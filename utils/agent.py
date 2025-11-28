@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Deque
 from langchain_core.runnables import RunnableLambda
 from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
+from langchain.agents.middleware import AgentState
 
 LOG_PATH = "webui.log"
 safe_agent = RunnableLambda(lambda _: {"action": "APPROVE"})
@@ -70,3 +71,20 @@ def collect_pending_calls(messages: list) -> Deque[dict]:
             pending_call_info.append({"idx": i, "pending_call": pc, "status": "pending"})
 
     return deque(pending_call_info)
+
+
+def last_message_index(state: AgentState, MessageType: type) -> int | None:
+    messages = state.get("messages", [])
+    if not messages:
+        return None
+
+    idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], MessageType):
+            idx = i
+            break
+
+    if idx is None:
+        return None
+
+    return idx
