@@ -2,12 +2,10 @@ import json
 from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Deque
-from langchain_core.runnables import RunnableLambda
 from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
 from langchain.agents.middleware import AgentState
 
 LOG_PATH = "webui.log"
-safe_agent = RunnableLambda(lambda _: {"action": "APPROVE"})
 
 
 def log_line(tag: str, data: Any) -> None:

@@ -5,10 +5,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain.agents import create_agent
 
 from agent.prompt import SYSTEM_PROMPT
-from agent.middlewares import (
-    safe_before_agent, safe_after_agent,
-    safe_after_model, safe_before_model,
-    hitl_replay_before_model)
+from agent.middlewares import build_safe_agent_middlewares
 from agent.tool_warpper import SafeAgentToolWrapperMiddleware
 
 
@@ -24,7 +21,10 @@ async def setup_agent():
     from langchain_core.runnables import RunnableLambda
 
     def _safe_agent(request, config=None):
-        return {"action": "CALL_JIT_APPROVAL"}
+        hook = request.get("hook", "") or ""
+        if hook == "tool_wrapper":
+            return {"action": "CALL_JIT_APPROVAL"}
+        return {"action": "APPROVE", "allow_long_term_memory": True}
 
     safe_agent = RunnableLambda(_safe_agent)
 
@@ -37,9 +37,7 @@ async def setup_agent():
 
     memory = MemorySaver()
     middlewares = [
-        safe_before_agent, safe_after_agent,
-        hitl_replay_before_model, safe_before_model,
-        safe_after_model,
+        *build_safe_agent_middlewares(safe_agent),
         SafeAgentToolWrapperMiddleware(safe_agent)
     ]
 
