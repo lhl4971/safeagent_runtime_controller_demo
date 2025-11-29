@@ -88,3 +88,18 @@ def last_message_index(state: AgentState, MessageType: type) -> int | None:
         return None
 
     return idx
+
+
+def has_safe_tag(message: BaseMessage, tag: str) -> bool:
+    if not isinstance(tag, str):
+        return False
+
+    ak = getattr(message, "additional_kwargs", {}) or {}
+    if not isinstance(ak, Dict):
+        return False
+
+    safe_tags = ak.get("safe_tags", []) or []
+    if not isinstance(safe_tags, List):
+        return False
+
+    return tag in safe_tags

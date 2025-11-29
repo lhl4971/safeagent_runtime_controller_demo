@@ -3,7 +3,7 @@ from langgraph.runtime import Runtime
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, ToolCall
 from langchain.agents.middleware import before_agent, after_agent, before_model, after_model
 from langchain.agents.middleware import AgentState
-from utils.agent import safe_agent, log_line, last_message_index
+from utils.agent import safe_agent, log_line, last_message_index, has_safe_tag
 
 
 def _serialize_single_tool_call(tc: Any) -> Dict[str, Any]:
@@ -59,6 +59,71 @@ def _normalize_tool_calls(tool_calls: Any) -> List[Dict[str, Any]]:
         return [_serialize_single_tool_call(tc) for tc in tool_calls]
 
     return [_serialize_single_tool_call(tool_calls)]
+
+
+def _extract_hitl_outcomes(decisions: List[Dict[str, Any]]):
+    """
+    Parse HITL decisions into two parallel structures:
+        - approved_calls: list of {id, name, args}
+        - rejected_msgs: list of ToolMessage (ready to merge back)
+    """
+    approved_calls = []
+    rejected_msgs = []
+
+    for d in decisions:
+        if not isinstance(d, dict):
+            continue
+
+        status = str(d.get("status", "")).upper().strip()
+        pc = d.get("pending_call") or {}
+        name = pc.get("name")
+        call_id = pc.get("id")
+        args = pc.get("args", {}) or {}
+
+        if not name or not call_id:
+            continue
+
+        if status == "SHADOW":
+            args = dict(args)
+            args["run_shadow"] = True
+
+        if status in ("APPROVE", "SHADOW"):
+            approved_calls.append({"id": call_id, "name": name, "args": args})
+            continue
+
+        if status == "REJECT":
+            rejected_msgs.append(
+                ToolMessage(
+                    name=name,
+                    tool_call_id=call_id,
+                    content=(
+                        f"[SafeAgent Controller] "
+                        f"Tool '{name}' call was rejected by human review."
+                    ),
+                )
+            )
+
+    return approved_calls, rejected_msgs
+
+
+def _merge_tool_messages(messages, new_tool_msgs):
+    """
+    In-place merge: replace existing ToolMessage by matching tool_call_id.
+    """
+    id_map = {
+        getattr(m, "tool_call_id", None): i
+        for i, m in enumerate(messages)
+        if isinstance(m, ToolMessage)
+    }
+
+    for tool_message in new_tool_msgs:
+        tcid = getattr(tool_message, "tool_call_id", None)
+        if not tcid:
+            continue
+
+        idx = id_map.get(tcid)
+        if idx is not None:
+            messages[idx] = tool_message
 
 
 @before_agent(can_jump_to=["end"])
@@ -793,5 +858,125 @@ def safe_after_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | No
 
         state["messages"][-1].content = override_context
         return None
+
+    return None
+
+
+@before_model(can_jump_to=["tools"])
+def hitl_replay_before_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    """
+    HITL Replay Middleware (before_model hook)
+    ==========================================
+
+    This hook implements the *state recovery layer* for SafeAgent's
+    human-in-the-loop (HITL) execution model. It performs **no safety
+    judgment** on its own; instead, it restores the runtime context after
+    human review and ensures that LangGraph can resume execution deterministically.
+
+    Why this middleware exists
+    --------------------------
+    LangGraph enforces strong state isolation: graph nodes may mutate
+    `state["messages"]` only *in place* and only in certain phases.
+    When HITL interrupts execution, the agent temporarily pauses the graph,
+    shows the pending tool calls to the user, and waits for human approval.
+
+    After the human selects APPROVE / SHADOW / REJECT for one or more tool
+    calls, this middleware performs the *only* allowed form of state repair:
+
+      **1. Merge human decisions back into the message context**
+         - REJECT → overwrite the original ToolMessage with a deterministic
+           rejection ToolMessage.
+         - APPROVE / SHADOW → inject an AIMessage containing the re-authorized
+           tool_calls list, tagged with ``HITL_REPLAY``.
+
+      **2. Restore graph execution flow**
+         - If re-authorized tool_calls exist → jump directly to the ``tools`` node.
+         - Otherwise → model continues normally.
+
+      **3. Clean up replay artifacts**
+         After the replayed tool calls finish, the tool outputs appear as new
+         ToolMessages. The middleware merges them back into their correct
+         locations and removes all replay scaffolding.
+
+    Route 1: HumanMessage marked SAFEAGENT_FLOW_CONTROL_MESSAGE
+    -----------------------------------------------------------
+    Indicates that HITL decisions have arrived from the UI.
+    Steps:
+        a) Remove the synthetic HumanMessage.
+        b) Extract APPROVE/SHADOW/REJECT outcomes.
+        c) Patch original ToolMessages for rejected calls.
+        d) If APPROVE/SHADOW exists:
+              → append an AIMessage(tool_calls=...) with tag HITL_REPLAY
+              → return {"jump_to": "tools"}.
+
+        If no approved actions → do nothing and continue.
+
+    Route 2: ToolMessage following a HITL_REPLAY AIMessage
+    ------------------------------------------------------
+    This means the replayed tool calls were just executed by LangGraph.
+    Steps:
+        a) Identify the HITL_REPLAY AIMessage.
+        b) Remove the replay AIMessage and its tool outputs.
+        c) Merge real ToolMessage outputs back into their correct positions.
+
+    Design Guarantees
+    -----------------
+    - Zero-trust: Only existing ToolMessages are overwritten; no new tool_call_id
+      may be introduced by replay.
+
+    - Deterministic: The replay AIMessage never becomes visible to the model;
+      it is removed immediately after tool execution finishes.
+
+    - Flow-safe: The middleware **only** resumes execution when human-approved
+      calls exist; it never escalates permissions.
+
+    - Graph-compatible: All state modifications are performed *in place*, in
+      compliance with LangGraph’s immutability constraints.
+
+    Returns
+    -------
+    - {"jump_to": "tools"}  — when approved tool calls must be executed.
+    - None                  — when no replay is needed or after merging results.
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return None
+
+    last_message = messages[-1]
+
+    # Route 1
+    if isinstance(last_message, HumanMessage) and has_safe_tag(last_message, "SAFEAGENT_FLOW_CONTROL_MESSAGE"):
+        ak = getattr(last_message, "additional_kwargs", {}) or {}
+        decisions = ak.get("hitl_call_decisions", None)
+        if not decisions:
+            return None
+
+        messages.pop()
+        approved_calls, rejected_msgs = _extract_hitl_outcomes(decisions)
+
+        _merge_tool_messages(messages, rejected_msgs)
+
+        if approved_calls:
+            ai_msg = AIMessage(
+                content="[SafeAgent Controller] Executing approved tool calls.",
+                tool_calls=[tc for tc in approved_calls],
+                additional_kwargs={"safe_tags": ["HITL_REPLAY"]},
+            )
+            messages.append(ai_msg)
+            return {"jump_to": "tools"}
+
+        return None
+
+    # Route 2
+    if isinstance(last_message, ToolMessage):
+        last_ai_msg_idx = last_message_index(state, AIMessage)
+        if last_ai_msg_idx is None:
+            return None
+        last_ai_message = messages[last_ai_msg_idx]
+        if not has_safe_tag(last_ai_message, "HITL_REPLAY"):
+            return None
+        replayed_tool_messages = messages[last_ai_msg_idx + 1:]
+        del messages[last_ai_msg_idx:]
+        _merge_tool_messages(messages, replayed_tool_messages)
 
     return None

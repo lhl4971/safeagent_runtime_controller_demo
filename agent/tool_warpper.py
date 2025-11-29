@@ -86,7 +86,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
         # === HITL-approved ===
         messages = request.state.get("messages", []) or []
         if messages:
-            last_ai_msg_idx = last_message_index(messages, AIMessage)
+            last_ai_msg_idx = last_message_index(request.state, AIMessage)
             msg = messages[last_ai_msg_idx]
             ak = getattr(msg, "additional_kwargs", {}) or {}
             safe_tags = ak.get("safe_tags", []) or []
@@ -215,7 +215,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
         # === HITL-approved ===
         messages = request.state.get("messages", []) or []
         if messages:
-            last_ai_msg_idx = last_message_index(messages, AIMessage)
+            last_ai_msg_idx = last_message_index(request.state, AIMessage)
             msg = messages[last_ai_msg_idx]
             ak = getattr(msg, "additional_kwargs", {}) or {}
             safe_tags = ak.get("safe_tags", []) or []

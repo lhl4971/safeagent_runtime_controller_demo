@@ -5,7 +5,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain.agents import create_agent
 
 from agent.prompt import SYSTEM_PROMPT
-from agent.middlewares import safe_before_agent, safe_before_model, safe_after_model, safe_after_agent
+from agent.middlewares import (
+    safe_before_agent, safe_after_agent,
+    safe_after_model, safe_before_model,
+    hitl_replay_before_model)
 from agent.tool_warpper import SafeAgentToolWrapperMiddleware
 
 
@@ -35,7 +38,8 @@ async def setup_agent():
     memory = MemorySaver()
     middlewares = [
         safe_before_agent, safe_after_agent,
-        safe_before_model, safe_after_model,
+        hitl_replay_before_model, safe_before_model,
+        safe_after_model,
         SafeAgentToolWrapperMiddleware(safe_agent)
     ]
 

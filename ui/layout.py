@@ -13,8 +13,8 @@ def reset():
 
 
 async def on_submit(user_msg, chat, trace, sid):
-    async for a, t, chat, trace, pending in stream(user_msg, chat, trace, sid, None):
-        yield a, t, chat, trace, pending
+    async for a, t, chat, trace, pending, call_decisions in stream(user_msg, chat, trace, sid, None):
+        yield a, t, chat, trace, pending, call_decisions
 
 
 async def resume_after_hitl(
@@ -43,15 +43,15 @@ async def resume_after_hitl(
     call_decisions = call_decisions or deque()
 
     if pending_calls:
-        yield chat, render_trace(trace), chat, trace, pending_calls
+        yield chat, render_trace(trace), chat, trace, pending_calls, call_decisions
         return
 
     if not call_decisions:
-        yield chat, render_trace(trace), chat, trace, None
+        yield chat, render_trace(trace), chat, trace, None, None
         return
 
-    async for a, t, chat, trace, pending in stream("", chat, trace, sid, call_decisions):
-        yield a, t, chat, trace, pending
+    async for a, t, chat, trace, pending, call_decisions in stream("", chat, trace, sid, call_decisions):
+        yield a, t, chat, trace, pending, call_decisions
 
 
 def build_ui():
@@ -108,7 +108,7 @@ def build_ui():
         ).then(
             fn=resume_after_hitl,
             inputs=[chat_state, trace_state, session_id, pending_calls_state, call_decisions_state],
-            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state],
+            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state, call_decisions_state],
         )
 
         # SHADOW RUN
@@ -123,7 +123,7 @@ def build_ui():
         ).then(
             fn=resume_after_hitl,
             inputs=[chat_state, trace_state, session_id, pending_calls_state, call_decisions_state],
-            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state],
+            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state, call_decisions_state],
         )
 
         # REJECT
@@ -138,7 +138,7 @@ def build_ui():
         ).then(
             fn=resume_after_hitl,
             inputs=[chat_state, trace_state, session_id, pending_calls_state, call_decisions_state],
-            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state],
+            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state, call_decisions_state],
         )
 
         staged = gr.State("")
@@ -148,7 +148,7 @@ def build_ui():
             lambda: "", inputs=None, outputs=msg,
         ).then(
             on_submit, inputs=[staged, chat_state, trace_state, session_id],
-            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state],
+            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state, call_decisions_state],
         )
 
         send_btn.click(
@@ -157,7 +157,7 @@ def build_ui():
             lambda: "", inputs=None, outputs=msg,
         ).then(
             on_submit, inputs=[staged, chat_state, trace_state, session_id],
-            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state],
+            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state, call_decisions_state],
         )
 
     return demo

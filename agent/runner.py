@@ -48,7 +48,7 @@ async def stream(
         ai_idx = len(chat) - 1
         ai_buf = ""
 
-    yield chat, render_trace(trace), chat, trace, None
+    yield chat, render_trace(trace), chat, trace, None, None
 
     first_loop = True
     while True:
@@ -75,27 +75,27 @@ async def stream(
                 if ch and getattr(ch, "content", None):
                     ai_buf += ch.content
                     chat[ai_idx]["content"] = ai_buf
-                    yield chat, render_trace(trace), chat, trace, None
+                    yield chat, render_trace(trace), chat, trace, None, None
             elif kind == "on_tool_start":
                 step += 1
                 trace.append({"step": step, "action": {"tool": tool_name, "args": inputs}})
-                yield chat, render_trace(trace), chat, trace, None
+                yield chat, render_trace(trace), chat, trace, None, None
             elif kind == "on_tool_end":
                 if not trace:
                     step = 1
                     trace.append({"step": step})
                 trace[-1]["observation"] = {"output": output}
-                yield chat, render_trace(trace), chat, trace, None
+                yield chat, render_trace(trace), chat, trace, None, None
 
         state = agent.get_state({"configurable": {"thread_id": sid}})
         messages = state.values.get("messages", [])
 
         pending_calls = collect_pending_calls(messages)
         if len(pending_calls) > 0:
-            yield chat, render_trace(trace), chat, trace, pending_calls
+            yield chat, render_trace(trace), chat, trace, pending_calls, None
             return
 
         next_nodes = getattr(state, "next", None)
         if not next_nodes:
-            yield chat, render_trace(trace), chat, trace, None
+            yield chat, render_trace(trace), chat, trace, None, None
             return
