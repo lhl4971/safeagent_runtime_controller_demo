@@ -1,0 +1,65 @@
+version: "0.1"
+
+cost_profiles:
+  actions:
+    REPLAN:
+      max_counts: 1
+    ROLLBACK:
+      max_steps: 1
+
+call_budget_profiles:
+  default:
+    window_seconds: 60
+    max_calls: 10
+
+  tools:
+    run_command:
+      window_seconds: 10
+      max_calls: 3
+
+
+policy:
+  preference: safety_first  # safety_first | task_first | ux_first
+  wait_until_available: true
+
+  hard_thresholds:
+    action_default:
+      ltm_scores:
+        secret_leak:      0.30
+        backdoor_trigger: 0.30
+
+      stm_scores:
+        secret_leak:      0.30
+        backdoor_trigger: 0.30
+
+      obs_scores:
+        secret_leak:      0.20
+        backdoor_trigger: 0.20
+
+    ltm_write:
+      obs_scores:
+        secret_leak:      0.20
+        memory_poisoning: 0.30
+        backdoor_trigger: 0.20
+      stm_scores:
+        secret_leak:      0.30
+        memory_poisoning: 0.40
+        backdoor_trigger: 0.30
+    
+    run_command:
+      obs_scores:
+        secret_leak:      0.20
+        memory_poisoning: 0.30
+        backdoor_trigger: 0.20
+      stm_scores:
+        secret_leak:      0.30
+        memory_poisoning: 0.40
+        backdoor_trigger: 0.30
+
+  encoders:
+    # canary_trigger: "config/canaries.yaml"
+    # tool_call_args: "config/call_args_policy.yaml"
+    # developer_policy: "config/developer_policy.yaml"
+    canary_trigger: {"config/canaries.yaml"}
+    tool_call_args: {"config/call_args_policy.yaml"}
+    developer_policy: {"config/developer_policy.yaml"}

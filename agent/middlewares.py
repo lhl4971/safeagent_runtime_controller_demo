@@ -1,65 +1,10 @@
 from typing import List, Dict, Any
 from langgraph.runtime import Runtime
 from langchain_core.runnables import Runnable
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, ToolCall
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain.agents.middleware import before_agent, after_agent, before_model, after_model
 from langchain.agents.middleware import AgentState, AgentMiddleware
-from utils.agent import log_line, last_message_index, has_safe_tag
-
-
-def _serialize_single_tool_call(tc: Any) -> Dict[str, Any]:
-    """
-    Serialize a single tool call (dict or ToolCall-like object) into a JSON-safe dict.
-
-    This ensures SafeAgent Core only sees plain data structures and Pydantic/JSON
-    can handle them safely.
-    """
-    if isinstance(tc, dict):
-        return {
-            "name": tc.get("name"),
-            "args": tc.get("args"),
-            "id": tc.get("id") or tc.get("tool_call_id"),
-            "type": tc.get("type") or "tool_call",
-        }
-
-    if isinstance(tc, ToolCall) or (
-        hasattr(tc, "name") and hasattr(tc, "args")
-    ):
-        data: Dict[str, Any] = {
-            "name": getattr(tc, "name", None),
-            "args": getattr(tc, "args", None),
-        }
-        tc_id = getattr(tc, "id", None)
-        if tc_id is not None:
-            data["id"] = tc_id
-        tc_type = getattr(tc, "type", None)
-        if tc_type is not None:
-            data["type"] = tc_type
-        else:
-            data["type"] = "tool_call"
-        return data
-
-    return {
-        "unknown_tool_call": repr(tc),
-    }
-
-
-def _normalize_tool_calls(tool_calls: Any) -> List[Dict[str, Any]]:
-    """
-    Normalize the `tool_calls` field into a JSON-safe list[dict] for SafeAgent Core.
-
-    Accepts:
-    - None
-    - Single ToolCall / dict
-    - list[ToolCall] / list[dict]
-    """
-    if tool_calls is None:
-        return []
-
-    if isinstance(tool_calls, list):
-        return [_serialize_single_tool_call(tc) for tc in tool_calls]
-
-    return [_serialize_single_tool_call(tool_calls)]
+from utils.agent import log_line, last_message_index, has_safe_tag, parse_mcp_tool_response
 
 
 def _extract_hitl_outcomes(decisions: List[Dict[str, Any]]):
@@ -127,9 +72,9 @@ def _merge_tool_messages(messages, new_tool_msgs):
             messages[idx] = tool_message
 
 
-def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
+def build_safe_agent_middlewares(safe_agent: Runnable, session_id: str) -> list[AgentMiddleware]:
     @before_agent(can_jump_to=["end"])
-    def safe_before_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    async def safe_before_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
         """
         Safety middleware for the **before_agent** stage.
 
@@ -181,7 +126,6 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
         or tool-selection logic is executed.
         """
         messages = state.get("messages", [])
-        session_policy = state.get("session_policy", {}) or {}
         if not messages:
             return None
 
@@ -194,16 +138,19 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
 
         core_request: Dict[str, Any] = {
             "hook": "before_agent",
-            "last_message": {
+            "observation": {
                 "role": "user",
                 "content": last_content,
             },
-            "session_policy": session_policy,
         }
         log_line("before_agent.core_request", core_request)
 
         try:
-            decision = safe_agent.invoke(core_request)
+            decision = await safe_agent.ainvoke({
+                "session_id": session_id,
+                "core_request": core_request,
+            })
+            decision = parse_mcp_tool_response(decision)
         except Exception as e:
             log_line("before_agent.core_error", {"error": str(e)})
             state["messages"].append(
@@ -223,14 +170,6 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
             state["messages"].append(AIMessage(content=error_text))
             return {"jump_to": "end"}
 
-        # Update Runtime session policy
-        policy_delta = decision.get("policy_delta", None)
-        if policy_delta is not None:
-            if not isinstance(policy_delta, dict):
-                policy_delta = {}
-            session_policy.update(policy_delta)
-            state["session_policy"] = session_policy
-
         if action == "APPROVE":
             return None
 
@@ -243,10 +182,10 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
             return {"jump_to": "end"}
 
         if action == "OVERRIDE":
-            override_context = decision.get("override_context")
+            override_context = decision.get("override")
             if not isinstance(override_context, str) or not override_context:
                 state["messages"].append(
-                    AIMessage(content="[SafeAgent Controller] Invalid override_input. Request blocked.")
+                    AIMessage(content="[SafeAgent Controller] Invalid override. Request blocked.")
                 )
                 return {"jump_to": "end"}
 
@@ -256,7 +195,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
         return None
 
     @before_model(can_jump_to=["end"])
-    def safe_before_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    async def safe_before_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
         """
         Safety middleware for the **before_model** stage.
 
@@ -294,7 +233,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
         All messages after the last HumanMessage are removed, and a guidance
         AIMessage is inserted instructing the model to re-plan safely.
 
-        - **NO_MODEL_CALLING**
+        - **TERMINATE**
         The model must not be called again for this turn.
         The controller rolls back to the last HumanMessage (if present) and
         inserts a final safety response.
@@ -327,7 +266,6 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
         before the model sees them—ensuring strict forward-propagation safety.
         """
         messages = state.get("messages", [])
-        session_policy = state.get("session_policy", {}) or {}
         if not messages:
             return None
 
@@ -346,18 +284,21 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
 
             core_request = {
                 "hook": "before_model",
-                "last_message": {
+                "observation": {
                     "role": "tool",
                     "name": msg.name,
                     "tool_call_id": msg.tool_call_id,
                     "content": content,
                 },
-                "session_policy": session_policy,
             }
             log_line("before_model.core_request", core_request)
 
             try:
-                decision = safe_agent.invoke(core_request)
+                decision = await safe_agent.ainvoke({
+                    "session_id": session_id,
+                    "core_request": core_request,
+                })
+                decision = parse_mcp_tool_response(decision)
             except Exception as e:
                 del state["messages"][last_ai_msg_idx + 1:]
                 log_line("before_model.core_error", {"error": str(e)})
@@ -377,7 +318,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
             log_line("before_model.core_decision", decision)
 
             # Allowed actions at this stage
-            ALLOWED_ACTIONS = {"APPROVE", "OVERRIDE", "ROLLBACK", "NO_MODEL_CALLING", "REJECT"}
+            ALLOWED_ACTIONS = {"APPROVE", "OVERRIDE", "ROLLBACK", "TERMINATE", "REJECT"}
             if action not in ALLOWED_ACTIONS:
                 del state["messages"][last_ai_msg_idx + 1:]
                 error_text = (
@@ -386,14 +327,6 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
                 )
                 state["messages"].append(AIMessage(content=error_text))
                 return {"jump_to": "end"}
-
-            # Update Runtime session policy
-            policy_delta = decision.get("policy_delta", None)
-            if policy_delta is not None:
-                if not isinstance(policy_delta, dict):
-                    policy_delta = {}
-                session_policy.update(policy_delta)
-                state["session_policy"] = session_policy
 
             # --- Apply per-message long-term memory policy if provided ---
             allow_long_term_memory = decision.get("allow_long_term_memory", False)
@@ -404,7 +337,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
                     tags = []
                 if "NO_LONG_TERM_MEMORY_WRITE" not in tags:
                     tags.append("NO_LONG_TERM_MEMORY_WRITE")
-                additional_kwargs["safe_tags"] = tags
+                # additional_kwargs["safe_tags"] = tags
                 state["messages"][tool_msg_idx].additional_kwargs = additional_kwargs
 
             if action == "APPROVE":
@@ -412,7 +345,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
 
             # === OVERRIDE: overwrite only the content of this ToolMessage ===
             if action == "OVERRIDE":
-                override_context = decision.get("override_context")
+                override_context = decision.get("override")
 
                 if not isinstance(override_context, str) or not override_context:
                     guidance = (
@@ -457,8 +390,8 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
                 )
                 return None
 
-            # === NO_MODEL_CALLING: do NOT call the model again ===
-            if action == "NO_MODEL_CALLING":
+            # === TERMINATE: do NOT call the model again ===
+            if action == "TERMINATE":
                 human_msg_idx = last_message_index(state, HumanMessage)
 
                 # if no HumanMessage, fallback to single canned response
@@ -476,16 +409,6 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
 
             # === REJECT: drop unsafe ToolMessage + disable the tool + continue model ===
             if action == "REJECT":
-                # Identify the tool call and block the tool
-                tool_name = None
-                if hasattr(msg, "name"):
-                    tool_name = msg.name
-                raw_blocked = session_policy.get("blocked_tools", [])
-                blocked_tools = set(raw_blocked or [])
-                if tool_name:
-                    blocked_tools.add(tool_name)
-                session_policy["blocked_tools"] = list(blocked_tools)
-
                 # Insert a guidance ToolMessage for the next model step
                 guidance = (
                     "[SafeAgent Core] The previous tool result was unsafe and has "
@@ -501,7 +424,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
         return None
 
     @after_model(can_jump_to=["model", "end"])
-    def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    async def safe_after_model(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
         """
         Safety middleware for the after_model stage.
 
@@ -550,13 +473,20 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
         preventing unsafe execution paths and enforcing zero-trust runtime control.
         """
         messages = state.get("messages", [])
-        session_policy = state.get("session_policy", {}) or {}
         if not messages:
             return None
 
         last_msg = messages[-1]
         last_content = getattr(last_msg, "content", "")
         tool_calls = getattr(last_msg, "tool_calls", [])
+
+        last_user_msg_idx = last_message_index(state, HumanMessage)
+        if last_user_msg_idx is None:
+            return None
+        last_user_msg = messages[last_user_msg_idx]
+        if not last_user_msg:
+            return None
+        last_user = getattr(last_user_msg, "content", "")
 
         # Only inspect AI model outputs.
         if not isinstance(last_msg, AIMessage):
@@ -566,56 +496,23 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
         if not tool_calls:
             return None
 
-        # === Check forbidden tools BEFORE asking the Core ===
-        blocked_tools = set(session_policy.get("blocked_tools", []) or [])
-        forbidden_called = False
-        forbidden_list = []
-
-        tool_calls = _normalize_tool_calls(tool_calls)
-        for tc in tool_calls:
-            name = tc.get("name")
-            if name in blocked_tools:
-                forbidden_called = True
-                forbidden_list.append(name)
-
-        if forbidden_called:
-            tools_str = ", ".join(sorted(forbidden_list))
-            guidance = (
-                "[SafeAgent Controller] The previous tool plan attempted to call "
-                f"forbidden tool(s): {tools_str}.\n"
-                "You MUST propose a new plan WITHOUT using these tools.\n"
-                "- Re-check the session policy.\n"
-                "- Provide a safer alternative approach.\n"
-            )
-
-            guidance_content = (
-                f"{last_content}\n\n{guidance}"
-                if isinstance(last_content, str)
-                else guidance
-            )
-
-            additional_kwargs = getattr(last_msg, "additional_kwargs", {}) or {}
-            additional_kwargs["safe_tags"].append("SAFEAGENT_FLOW_CONTROL_MESSAGE")
-            state["messages"][-1] = AIMessage(
-                content=guidance_content,
-                additional_kwargs=additional_kwargs,
-            )
-            setattr(state["messages"][-1], "tool_calls", [])
-            return {"jump_to": "model"}
-
         core_request: Dict[str, Any] = {
             "hook": "after_model",
-            "last_message": {
+            "observation": {
                 "role": "assistant",
                 "content": last_content,
                 "tool_calls": tool_calls,
+                "last_user": last_user
             },
-            "session_policy": session_policy,
         }
         log_line("after_model.core_request", core_request)
 
         try:
-            decision = safe_agent.invoke(core_request)
+            decision = await safe_agent.ainvoke({
+                "session_id": session_id,
+                "core_request": core_request,
+            })
+            decision = parse_mcp_tool_response(decision)
         except Exception as e:
             log_line("after_model.core_error", {"error": str(e)})
             error_text = (
@@ -645,14 +542,6 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
             )
             return {"jump_to": "end"}
 
-        # Update Runtime session policy
-        policy_delta = decision.get("policy_delta", None)
-        if policy_delta is not None:
-            if not isinstance(policy_delta, dict):
-                policy_delta = {}
-            session_policy.update(policy_delta)
-            state["session_policy"] = session_policy
-
         if action == "APPROVE":
             return None
 
@@ -679,7 +568,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
 
             # Overwrite last AIMessage content and clear tool_calls.
             additional_kwargs = getattr(last_msg, "additional_kwargs", {}) or {}
-            additional_kwargs["safe_tags"].append("SAFEAGENT_FLOW_CONTROL_MESSAGE")
+            # additional_kwargs["safe_tags"].append("SAFEAGENT_FLOW_CONTROL_MESSAGE")
             state["messages"][-1] = AIMessage(
                 content=guidance_content,
                 additional_kwargs=additional_kwargs,
@@ -714,7 +603,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
             )
 
             additional_kwargs = getattr(last_msg, "additional_kwargs", {}) or {}
-            additional_kwargs["safe_tags"].append("SAFEAGENT_FLOW_CONTROL_MESSAGE")
+            # additional_kwargs["safe_tags"].append("SAFEAGENT_FLOW_CONTROL_MESSAGE")
             state["messages"][-1] = AIMessage(
                 content=guidance_content,
                 additional_kwargs=additional_kwargs,
@@ -725,7 +614,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
         return None
 
     @after_agent
-    def safe_after_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    async def safe_after_agent(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
         """
         Safety middleware for the after_agent stage.
 
@@ -769,7 +658,6 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
         validated, policy-respecting natural-language responses can reach the user.
         """
         messages = state.get("messages", [])
-        session_policy = state.get("session_policy", {}) or {}
         if not messages:
             return None
 
@@ -782,16 +670,19 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
 
         core_request: Dict[str, Any] = {
             "hook": "after_agent",
-            "last_message": {
+            "observation": {
                 "role": "assistant",
                 "content": last_content,
             },
-            "session_policy": session_policy,
         }
         log_line("after_agent.core_request", core_request)
 
         try:
-            decision = safe_agent.invoke(core_request)
+            decision = await safe_agent.ainvoke({
+                "session_id": session_id,
+                "core_request": core_request,
+            })
+            decision = parse_mcp_tool_response(decision)
         except Exception as e:
             log_line("after_agent.core_error", {"error": str(e)})
             error_text = (
@@ -820,14 +711,6 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
             )
             return None
 
-        # Optional session_policy update (policy_delta) for any valid action.
-        policy_delta = decision.get("policy_delta", None)
-        if policy_delta is not None:
-            if not isinstance(policy_delta, dict):
-                policy_delta = {}
-            session_policy.update(policy_delta)
-            state["session_policy"] = session_policy
-
         if action == "APPROVE":
             return None
 
@@ -843,7 +726,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable) -> list[AgentMiddleware]:
             return None
 
         if action == "OVERRIDE":
-            override_context = decision.get("override_context")
+            override_context = decision.get("override")
             if not isinstance(override_context, str) or not override_context:
                 error_text = (
                     "[SafeAgent Controller] Invalid override_context. "

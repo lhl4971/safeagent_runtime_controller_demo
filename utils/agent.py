@@ -23,6 +23,8 @@ def render_trace(events: List[Dict[str, Any]]) -> str:
     md = ["### 🧭 Function Calls"]
 
     def pretty(obj: Any) -> str:
+        if isinstance(obj, ToolMessage):
+            obj = parse_mcp_tool_response(getattr(obj, "content", obj))
         if isinstance(obj, BaseMessage):
             obj = json.loads(getattr(obj, "content", obj))
         return json.dumps(obj, ensure_ascii=False, indent=2)
@@ -101,3 +103,28 @@ def has_safe_tag(message: BaseMessage, tag: str) -> bool:
         return False
 
     return tag in safe_tags
+
+
+def parse_mcp_tool_response(resp: Any) -> Any:
+    # LangChain MCP adapter commonly returns: list[{"type":"text","text":"...json..."}]
+    if isinstance(resp, list):
+        texts = []
+        for b in resp:
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str):
+                texts.append(b["text"])
+        merged = "\n".join(texts).strip()
+        if not merged:
+            return resp
+        try:
+            return json.loads(merged)
+        except json.JSONDecodeError:
+            return merged
+    if isinstance(resp, dict):
+        return resp
+    if isinstance(resp, str):
+        s = resp.strip()
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            return s
+    return resp

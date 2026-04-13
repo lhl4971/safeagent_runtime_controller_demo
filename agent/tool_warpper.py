@@ -5,7 +5,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langgraph.types import Command
-from utils.agent import log_line, last_message_index
+from utils.agent import log_line, last_message_index, parse_mcp_tool_response
 
 
 class SafeAgentToolWrapperMiddleware(AgentMiddleware):
@@ -61,9 +61,10 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
     approval before execution.
     """
 
-    def __init__(self, safe_agent: Runnable) -> None:
+    def __init__(self, safe_agent: Runnable, session_id: str) -> None:
         super().__init__()
         self.safe_agent = safe_agent
+        self.session_id = session_id
 
     def wrap_tool_call(
         self,
@@ -100,20 +101,23 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 return handler(request)
 
         # === SafeAgent Core decision ===
-        session_policy = request.state.get("session_policy", {}) or {}
         core_request: Dict[str, Any] = {
             "hook": "tool_wrapper",
-            "tool": {
+            "observation": {
+                "plan": msg.content,
                 "name": call_name,
+                "args": args,
                 "description": getattr(tool, "description", None),
-            },
-            "args": args,
-            "session_policy": session_policy,
+            }
         }
         log_line("tool_wrapper.core_request", core_request)
 
         try:
-            decision: Dict[str, Any] = self.safe_agent.invoke(core_request, config=cfg)
+            decision: Dict[str, Any] = self.safe_agent.invoke({
+                "session_id": self.session_id,
+                "core_request": core_request,
+            })
+            decision = parse_mcp_tool_response(decision)
         except Exception as e:
             log_line("tool_wrapper.core_error", {"error": str(e)})
             error_text = (
@@ -155,7 +159,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
             )
 
         if action == "CALL_REWRITE":
-            override_args = decision.get("override_args")
+            override_args = decision.get("override")
             if isinstance(override_args, dict):
                 tool_call["args"] = override_args
             else:
@@ -229,20 +233,23 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
                 return await handler(request)
 
         # === SafeAgent Core decision ===
-        session_policy = request.state.get("session_policy", {}) or {}
         core_request: Dict[str, Any] = {
             "hook": "tool_wrapper",
-            "tool": {
+            "observation": {
+                "plan": msg.content,
                 "name": call_name,
+                "args": args,
                 "description": getattr(tool, "description", None),
-            },
-            "args": args,
-            "session_policy": session_policy,
+            }
         }
         log_line("tool_wrapper.core_request", core_request)
 
         try:
-            decision: Dict[str, Any] = await self.safe_agent.ainvoke(core_request, config=cfg)
+            decision: Dict[str, Any] = await self.safe_agent.ainvoke({
+                "session_id": self.session_id,
+                "core_request": core_request,
+            })
+            decision = parse_mcp_tool_response(decision)
         except Exception as e:
             log_line("tool_wrapper.core_error", {"error": str(e)})
             error_text = (
@@ -284,7 +291,7 @@ class SafeAgentToolWrapperMiddleware(AgentMiddleware):
             )
 
         if action == "CALL_REWRITE":
-            override_args = decision.get("override_args")
+            override_args = decision.get("override")
             if isinstance(override_args, dict):
                 tool_call["args"] = override_args
             else:

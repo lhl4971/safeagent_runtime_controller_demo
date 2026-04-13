@@ -1,11 +1,19 @@
 import uuid
-import asyncio
 from typing import Dict, List, Deque, Any, Optional
 from langchain_core.messages import HumanMessage
 from agent.core import setup_agent
 from utils.agent import collect_pending_calls, render_trace
 
-agent = asyncio.run(setup_agent())
+AGENT_CACHE: Dict[uuid.UUID, Any] = {}
+
+
+async def get_or_create_agent(sid: uuid.UUID):
+    if sid in AGENT_CACHE:
+        return AGENT_CACHE[sid]
+
+    agent = await setup_agent(sid)
+    AGENT_CACHE[sid] = agent
+    return agent
 
 
 async def stream(
@@ -15,6 +23,8 @@ async def stream(
     sid: uuid.UUID,
     call_decisions: Optional[Deque[Dict[str, Any]]],
 ):
+    agent = await get_or_create_agent(sid)
+
     chat = chat or []
     trace = trace or []
     step = sum(1 for e in trace if "action" in e)
