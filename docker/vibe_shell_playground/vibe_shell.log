@@ -1,0 +1,104 @@
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 3.2.4                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      VibeShellMCP, 3.2.4                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[04/21/26 03:01:10] INFO     Starting MCP server 'VibeShellMCP' transport.py:301
+                             with transport 'http' on                           
+                             http://0.0.0.0:8000/mcp                            
+INFO:     Started server process [15]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+Workspace root: /home/ubuntu/workspace
+INFO:     172.20.0.1:42170 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42172 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:42178 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42192 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42196 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42212 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42232 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:42224 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42238 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42250 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42266 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46112 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46132 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:46128 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46140 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46156 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46162 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46164 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46188 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:46172 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46202 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46208 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46216 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46230 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46256 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:46244 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46270 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46284 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:46292 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41468 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41478 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:41472 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41490 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:43232 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:43234 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:55358 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:55378 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:55374 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:55384 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:55398 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:55400 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53534 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53560 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:53544 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53568 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53582 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53598 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53604 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53614 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:53606 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53628 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53630 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:53636 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36440 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36448 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:36446 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36456 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36464 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36466 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36476 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36502 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:36492 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36508 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36514 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:36522 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:49852 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:49880 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:49868 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:49892 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41358 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41372 - "DELETE /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:57110 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:57126 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     172.20.0.1:57112 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:57142 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:57152 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     172.20.0.1:57166 - "DELETE /mcp HTTP/1.1" 200 OK

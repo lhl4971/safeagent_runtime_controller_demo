@@ -1,31 +1,56 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_NO_MODIFY_PATH=1
+ENV PATH="/home/ubuntu/.local/bin:${PATH}"
+ENV VIBESHELL_WORKSPACE=/home/ubuntu/workspace
 
-# 使用 unminimize 让系统恢复 man / locale / help 等内容
+# Restore standard Ubuntu utilities and documentation
 RUN yes | unminimize
 
-# 安装常用开发工具与 SSH 服务
+# Install base system packages, SSH, Python, and common utilities
 RUN apt update && apt install -y \
-    sudo vim nano curl wget git unzip zip htop net-tools iproute2 iputils-ping \
-    lsb-release ca-certificates software-properties-common build-essential cmake gdb make \
-    pkg-config python3 python3-pip python3-venv clang g++ \
-    openssh-server rsync netcat-traditional dnsutils telnet tree lsof procps sysstat iotop bash-completion plocate \
- && updatedb \
+    sudo curl wget git vim nano unzip zip htop tree procps lsof \
+    net-tools iproute2 iputils-ping dnsutils telnet rsync \
+    openssh-server ca-certificates bash-completion \
+    python3 python3-pip python3-venv \
  && apt clean && rm -rf /var/lib/apt/lists/*
 
-# 创建 SSH 目录并允许密码登录
+# Configure passwords and sudo access for the existing ubuntu user
+RUN echo 'root:U3FsDR5sJTi' | chpasswd && \
+    echo 'ubuntu:ys8k1RzDvAz' | chpasswd && \
+    usermod -aG sudo ubuntu && \
+    echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ubuntu && \
+    chmod 440 /etc/sudoers.d/ubuntu
+
+# Configure SSH: disable root login, enable password authentication
 RUN mkdir -p /var/run/sshd && \
-    echo 'root:root' | chpasswd && \
-    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
 
-# 确保 ubuntu 用户存在并能 sudo 免密
-RUN usermod -aG sudo ubuntu && \
-    echo "ubuntu ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ubuntu && chmod 440 /etc/sudoers.d/ubuntu
+# Install uv using the official installer
+RUN su - ubuntu -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
 
-# SSH 自启动命令（防止容器退出）
-CMD ["/usr/sbin/sshd", "-D"]
+# Create application, workspace, and input directories
+RUN mkdir -p /home/ubuntu/mcp /home/ubuntu/workspace /input /opt/bootstrap && \
+    touch /home/ubuntu/mcp/vibe_shell.log && \
+    chown -R ubuntu:ubuntu /home/ubuntu/mcp /home/ubuntu/workspace /input /opt/bootstrap
 
-# 暴露常用端口
+# Create a virtual environment with uv and install fastmcp into it
+RUN su - ubuntu -c '/home/ubuntu/.local/bin/uv venv /home/ubuntu/mcp/.venv' && \
+    su - ubuntu -c '/home/ubuntu/.local/bin/uv pip install --python /home/ubuntu/mcp/.venv/bin/python fastmcp'
+
+# Copy a default application file into the image as a fallback
+COPY --chown=ubuntu:ubuntu mcp/vibe_shell.py /opt/bootstrap/vibe_shell.py
+
+# Copy the entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+USER ubuntu
+WORKDIR /home/ubuntu/mcp
+
 EXPOSE 22 8000
+
+CMD ["/entrypoint.sh"]

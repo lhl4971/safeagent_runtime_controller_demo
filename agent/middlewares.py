@@ -31,7 +31,7 @@ def _extract_hitl_outcomes(decisions: List[Dict[str, Any]]):
 
         if status == "SHADOW":
             args = dict(args)
-            args["run_shadow"] = True
+            # args["run_shadow"] = True
 
         if status in ("APPROVE", "SHADOW"):
             approved_calls.append({"id": call_id, "name": name, "args": args})
@@ -280,7 +280,7 @@ def build_safe_agent_middlewares(safe_agent: Runnable, session_id: str) -> list[
             msg = messages[tool_msg_idx]
             content = getattr(msg, "content", "")
             if not isinstance(content, str):
-                continue
+                content = str(content)
 
             core_request = {
                 "hook": "before_model",
