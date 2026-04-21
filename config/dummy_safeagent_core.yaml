@@ -1,0 +1,19 @@
+dummy_safeagent_core:
+  default_middleware_action: "APPROVE"
+  allow_long_term_memory: true
+  default_tool_action: "CALL_BLOCK"
+
+  tool_actions:
+    file_glob_search: "CALL_ALLOW"
+    search_in_files: "CALL_ALLOW"
+    inspect_project: "CALL_ALLOW"
+    get_file_info: "CALL_ALLOW"
+    fetch_url_content: "CALL_ALLOW"
+    ls: "CALL_ALLOW"
+    read_file: "CALL_ALLOW"
+
+    create_new_file: "CALL_JIT_APPROVAL"
+    single_find_and_replace: "CALL_JIT_APPROVAL"
+    clone_repo: "CALL_JIT_APPROVAL"
+    setup_python_env: "CALL_JIT_APPROVAL"
+    run_terminal_command: "CALL_JIT_APPROVAL"

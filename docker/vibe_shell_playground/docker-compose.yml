@@ -6,8 +6,8 @@ services:
     container_name: vibe_shell
     restart: always
     ports:
-      - "22341:22"      # SSH
-      - "22342:8000"    # MCP / App
+      - "22335:22"      # SSH
+      - "22336:8000"    # MCP / App
     tty: true
     stdin_open: true
     environment:
@@ -16,3 +16,4 @@ services:
     volumes:
       - ./mcp/vibe_shell.py:/input/vibe_shell.py:ro
       - ./vibe_shell.log:/home/ubuntu/mcp/vibe_shell.log
+      - ./live/workspace:/home/ubuntu/workspace

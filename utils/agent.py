@@ -1,9 +1,13 @@
 import json
+import yaml
 from collections import deque
 from datetime import datetime
-from typing import Any, Dict, List, Deque
+from pathlib import Path
+from typing import Any, Dict, List, Deque, Tuple
 from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
 from langchain.agents.middleware import AgentState
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_core.tools import BaseTool
 
 LOG_PATH = "webui.log"
 
@@ -29,8 +33,19 @@ def render_trace(events: List[Dict[str, Any]]) -> str:
             obj = json.loads(getattr(obj, "content", obj))
         return json.dumps(obj, ensure_ascii=False, indent=2)
 
-    for ev in events:
-        step = ev.get("step", "?")
+    hidden_steps = {ev.get("step") for ev in events if "action" in ev and ev["action"].get("tool") == "safeagent_step"}
+    filtered_events = [ev for ev in events if ev.get("step") not in hidden_steps]
+
+    step_map = {}
+    next_step = 1
+    for ev in filtered_events:
+        raw_step = ev.get("step")
+        if raw_step not in step_map:
+            step_map[raw_step] = next_step
+            next_step += 1
+
+    for ev in filtered_events:
+        step = step_map[ev.get("step")]
         if "action" in ev:
             tool = ev["action"].get("tool", "?")
             args = ev["action"].get("args", {})
@@ -128,3 +143,40 @@ def parse_mcp_tool_response(resp: Any) -> Any:
         except json.JSONDecodeError:
             return s
     return resp
+
+
+def load_yaml(path: Path) -> Dict[str, Any]:
+    obj = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return obj if isinstance(obj, dict) else {}
+
+
+async def get_safeagent_tools(
+    mcp_url: str = "http://127.0.0.1:8000/mcp",
+    server_name: str = "safeagent-core",
+) -> Tuple[MultiServerMCPClient, BaseTool, BaseTool]:
+    """
+    返回:
+      - client
+      - register_tool (BaseTool)
+      - step_tool     (BaseTool)
+    """
+    client = MultiServerMCPClient(
+        {
+            server_name: {
+                "url": mcp_url,
+                "transport": "streamable_http",
+            }
+        }
+    )
+
+    tools = await client.get_tools()
+
+    register_tool = next((t for t in tools if t.name == "safeagent_register_session"), None)
+    step_tool = next((t for t in tools if t.name == "safeagent_step"), None)
+
+    if register_tool is None:
+        raise RuntimeError("MCP tools missing: safeagent_register_session")
+    if step_tool is None:
+        raise RuntimeError("MCP tools missing: safeagent_step")
+
+    return client, register_tool, step_tool

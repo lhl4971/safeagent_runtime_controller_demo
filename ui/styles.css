@@ -1,51 +1,146 @@
-/* 聊天区域保持不变 */
-#chat { height: 66vh !important; }
-#trace_col { height: 66vh; display: flex; flex-direction: column; }
-#trace { flex: 1 1 auto; overflow: auto; }
+/* =========================
+   Layout
+   ========================= */
+#chat {
+  height: 66vh !important;
+}
 
-/* ===== 全屏遮罩：半透明黑色 + 居中 ===== */
+#trace_col {
+  height: 66vh;
+  display: flex;
+  flex-direction: column;
+}
+
+#trace {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+/* =========================
+   Theme variables
+   Default = light mode
+   ========================= */
+:root {
+  --hitl-overlay-bg: rgba(0, 0, 0, 0.45);
+
+  --hitl-card-bg: #ffffff;
+  --hitl-card-fg: #111827;
+  --hitl-card-border: rgba(17, 24, 39, 0.10);
+  --hitl-card-shadow: 0 14px 36px rgba(0, 0, 0, 0.16);
+
+  --hitl-code-bg: #f3f4f6;
+  --hitl-code-fg: #111827;
+
+  --hitl-muted-fg: #4b5563;
+
+  --hitl-approve-bg: #22c55e;
+  --hitl-shadowrun-bg: #4b5563;
+  --hitl-reject-bg: #ef4444;
+  --hitl-button-fg: #ffffff;
+}
+
+/* Follow system dark mode by default */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --hitl-card-bg: #111827;
+    --hitl-card-fg: #f9fafb;
+    --hitl-card-border: rgba(249, 250, 251, 0.08);
+    --hitl-card-shadow: 0 14px 36px rgba(0, 0, 0, 0.60);
+
+    --hitl-code-bg: #1f2937;
+    --hitl-code-fg: #f9fafb;
+
+    --hitl-muted-fg: #d1d5db;
+  }
+}
+
+/* If Gradio/theme adds explicit theme markers, prefer them over system */
+html.dark,
+body.dark,
+html[data-theme="dark"],
+body[data-theme="dark"] {
+  --hitl-card-bg: #111827;
+  --hitl-card-fg: #f9fafb;
+  --hitl-card-border: rgba(249, 250, 251, 0.08);
+  --hitl-card-shadow: 0 14px 36px rgba(0, 0, 0, 0.60);
+
+  --hitl-code-bg: #1f2937;
+  --hitl-code-fg: #f9fafb;
+
+  --hitl-muted-fg: #d1d5db;
+}
+
+html.light,
+body.light,
+html[data-theme="light"],
+body[data-theme="light"] {
+  --hitl-card-bg: #ffffff;
+  --hitl-card-fg: #111827;
+  --hitl-card-border: rgba(17, 24, 39, 0.10);
+  --hitl-card-shadow: 0 14px 36px rgba(0, 0, 0, 0.16);
+
+  --hitl-code-bg: #f3f4f6;
+  --hitl-code-fg: #111827;
+
+  --hitl-muted-fg: #4b5563;
+}
+
+/* =========================
+   HITL modal overlay
+   ========================= */
 #hitl_modal {
   position: fixed !important;
   inset: 0;
   display: flex !important;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--hitl-overlay-bg);
   z-index: 9999 !important;
 }
 
-/* 只把 group 自带的那一层背景清空，不再影响所有子 div */
+/* Clear the default Group wrapper layer only */
 #hitl_modal > div {
   background: transparent !important;
   box-shadow: none !important;
   border: none !important;
 }
 
-/* ===== 真正的卡片容器：圆角 + 不透明背景 ===== */
-/* 颜色选用高对比度深蓝灰 + 近白字体，适配深色/浅色背景 */
+/* =========================
+   Modal card
+   ========================= */
 #hitl_card {
-  background: #111827 !important;        /* 深蓝灰，Tailwind slate-900 近似值 */
-  color: #f9fafb;                        /* 近白，保证对比度 */
+  background: var(--hitl-card-bg) !important;
+  color: var(--hitl-card-fg) !important;
+
   border-radius: 20px !important;
   padding: 16px 20px 14px;
-
-  width: min(580px, 92vw);               /* 略放宽，让三颗按钮一行更舒展 */
+  width: min(580px, 92vw);
   margin: 0 auto;
 
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6);
-  border: 1px solid rgba(249, 250, 251, 0.08);
+  box-shadow: var(--hitl-card-shadow);
+  border: 1px solid var(--hitl-card-border);
 }
 
-/* 卡片里的 markdown 面板去掉默认灰底，只显示文字 */
+/* Remove default panel backgrounds inside the card */
 #hitl_card .gr-markdown,
 #hitl_modal_content {
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
   margin: 0;
+  color: var(--hitl-card-fg) !important;
 }
 
-/* 标题微调 */
+/* Headings */
+#hitl_modal_content h1,
+#hitl_modal_content h2,
+#hitl_modal_content h3,
+#hitl_modal_content h4,
+#hitl_modal_content h5,
+#hitl_modal_content h6 {
+  color: var(--hitl-card-fg) !important;
+}
+
 #hitl_modal_content h2,
 #hitl_modal_content h3 {
   margin-top: 0;
@@ -54,54 +149,115 @@
   font-weight: 600;
 }
 
-/* code / pre 样式 */
+/* Paragraphs / lists */
+#hitl_modal_content p,
+#hitl_modal_content li,
+#hitl_modal_content span,
+#hitl_modal_content div {
+  color: var(--hitl-card-fg) !important;
+}
+
+/* Muted/help text if needed */
+#hitl_modal_content .muted,
+#hitl_modal_content .secondary {
+  color: var(--hitl-muted-fg) !important;
+}
+
+/* Code blocks */
 #hitl_modal_content code,
 #hitl_modal_content pre {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
   font-size: 0.85rem;
+  background: var(--hitl-code-bg) !important;
+  color: var(--hitl-code-fg) !important;
+  border: none !important;
 }
 
-/* ===== 按钮区域：单行布局 ===== */
+#hitl_modal_content code {
+  padding: 0.15rem 0.35rem;
+  border-radius: 6px;
+}
+
+#hitl_modal_content pre {
+  padding: 10px 12px;
+  border-radius: 10px;
+  overflow: auto;
+  margin: 8px 0 0;
+}
+
+/* Links */
+#hitl_modal_content a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+/* =========================
+   Action buttons
+   ========================= */
 #hitl_modal_actions {
   margin-top: 12px;
   display: flex;
-  flex-wrap: nowrap;          /* 不换行 */
+  flex-wrap: nowrap;
   gap: 8px;
 }
 
-/* 基础按钮样式：胶囊圆角 + 等宽 */
 #hitl_modal_actions .gr-button,
 #hitl_modal_actions button {
   border-radius: 999px !important;
   font-size: 0.9rem;
   padding: 8px 14px !important;
   border: none !important;
-  color: #ffffff;
-  flex: 1 1 0;                /* 三个按钮等分一行 */
+  color: var(--hitl-button-fg) !important;
+  flex: 1 1 0;
   text-align: center;
+  box-shadow: none !important;
 }
 
-/* APPROVE（绿色），取高对比度绿：近似 Tailwind green-500 */
+/* APPROVE */
 #hitl_modal_actions .gr-button:nth-of-type(1),
 #hitl_modal_actions button:nth-of-type(1) {
-  background: #22c55e;
+  background: var(--hitl-approve-bg) !important;
 }
 
-/* SHADOW RUN（中性深灰），近似 gray-600 */
-#hitl_modal_actions .gr-button:nth-of-type(2),
+/* SHADOW RUN */
+/* #hitl_modal_actions .gr-button:nth-of-type(2),
 #hitl_modal_actions button:nth-of-type(2) {
-  background: #4b5563;
+  background: var(--hitl-shadowrun-bg) !important;
+} */
+
+/* REJECT */
+#hitl_modal_actions .gr-button:last-of-type,
+#hitl_modal_actions button:last-of-type {
+  background: var(--hitl-reject-bg) !important;
 }
 
-/* REJECT（红色），近似 red-500 */
-#hitl_modal_actions .gr-button:nth-of-type(3),
-#hitl_modal_actions button:nth-of-type(3) {
-  background: #ef4444;
-}
-
-/* hover 轻微提亮 */
 #hitl_modal_actions .gr-button:hover,
 #hitl_modal_actions button:hover {
   filter: brightness(1.06);
+}
+
+#hitl_modal_actions .gr-button:focus-visible,
+#hitl_modal_actions button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 2px;
+}
+
+/* =========================
+   Small-screen tweaks
+   ========================= */
+@media (max-width: 520px) {
+  #hitl_card {
+    width: min(94vw, 94vw);
+    padding: 14px 14px 12px;
+  }
+
+  #hitl_modal_actions {
+    flex-wrap: wrap;
+  }
+
+  #hitl_modal_actions .gr-button,
+  #hitl_modal_actions button {
+    flex: 1 1 100%;
+  }
 }

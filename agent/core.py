@@ -1,5 +1,4 @@
 import os
-import json
 from langchain_openai import ChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.memory import MemorySaver
@@ -8,6 +7,9 @@ from langchain.agents import create_agent
 from agent.prompt import SYSTEM_PROMPT
 from agent.middlewares import build_safe_agent_middlewares
 from agent.tool_warpper import SafeAgentToolWrapperMiddleware
+# from utils.agent import load_yaml, parse_mcp_tool_response, get_safeagent_tools
+import yaml
+from utils.dummy_safeagent_core import build_dummy_safeagent_core
 
 
 async def setup_agent(session_id: str):
@@ -19,37 +21,31 @@ async def setup_agent(session_id: str):
     })
     tools = await client.get_tools()
 
-    from langchain_core.runnables import RunnableLambda
+    # configs
+    # cfg_dir = Path("config")
+    # runtime_cfg = load_yaml(cfg_dir / "runtime.yaml")
+    # dev_cfg = load_yaml(cfg_dir / "developer.yaml")
 
-    def _safe_agent(request, config=None):
-        hook = request.get("core_request").get("hook", "") or ""
-        if hook == "tool_wrapper":
-            return [
-                {
-                    "type": "text",
-                    "text": json.dumps({
-                        "action": "CALL_JIT_APPROVAL"
-                    })
-                }
-            ]
-        return [
-            {
-                "type": "text",
-                "text": json.dumps({
-                    "action": "APPROVE",
-                    "allow_long_term_memory": True
-                })
-            }
-        ]
+    # MCP tools (objects)
+    # _client, register_tool, step_tool = await get_safeagent_tools()
 
-    safe_agent = RunnableLambda(_safe_agent)
-
-    # model = ChatOpenAI(
-    #     model="deepseek-chat",
-    #     base_url="https://api.deepseek.com/v1",
-    #     api_key=os.environ["DEEPSEEK_API_TOKEN"],
-    #     temperature=0,
+    # register_raw = await register_tool.ainvoke(
+    #     {
+    #         "session_id": session_id,
+    #         "runtime_cfg": runtime_cfg,
+    #         "dev_cfg": dev_cfg,
+    #     }
     # )
+    # register = parse_mcp_tool_response(register_raw)
+
+    # if not (isinstance(register, dict) and register.get("ok") is True):
+    #     raise RuntimeError(f"register failed: {register}")
+    # safeagent_core = step_tool
+
+    with open("config/dummy_safeagent_core.yaml", "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    safeagent_core = build_dummy_safeagent_core(cfg)
 
     model = ChatOpenAI(
         model="openai/gpt-oss-120b",
@@ -60,8 +56,8 @@ async def setup_agent(session_id: str):
 
     memory = MemorySaver()
     middlewares = [
-        *build_safe_agent_middlewares(safe_agent, session_id),
-        SafeAgentToolWrapperMiddleware(safe_agent, session_id)
+        *build_safe_agent_middlewares(safeagent_core, session_id),
+        SafeAgentToolWrapperMiddleware(safeagent_core, session_id)
     ]
 
     return create_agent(

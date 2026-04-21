@@ -59,7 +59,7 @@ def build_ui():
         session_id = gr.State()
         demo.load(fn=lambda: str(uuid.uuid4()), outputs=session_id)
 
-        gr.Markdown("# ⚙️ Linux Command Agent WebUI")
+        gr.Markdown("# ⚙️ VibeShell Agent WebUI")
         with gr.Row():
             with gr.Column(scale=4):
                 chatbox = gr.Chatbot(elem_id="chat", type="messages", show_label=False)
@@ -77,7 +77,7 @@ def build_ui():
                 )
                 with gr.Row(elem_id="hitl_modal_actions"):
                     approve_btn = gr.Button("APPROVE")
-                    shadow_btn = gr.Button("SHADOW RUN")
+                    # shadow_btn = gr.Button("SHADOW RUN")
                     reject_btn = gr.Button("REJECT")
 
         chat_state = gr.State([])
@@ -112,19 +112,19 @@ def build_ui():
         )
 
         # SHADOW RUN
-        shadow_btn.click(
-            fn=lambda pending, decisions: record_hitl_decision(pending, decisions, "SHADOW"),
-            inputs=[pending_calls_state, call_decisions_state],
-            outputs=[pending_calls_state, call_decisions_state],
-        ).then(
-            fn=render_hitl_modal,
-            inputs=pending_calls_state,
-            outputs=[hitl_md, hitl_modal],
-        ).then(
-            fn=resume_after_hitl,
-            inputs=[chat_state, trace_state, session_id, pending_calls_state, call_decisions_state],
-            outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state, call_decisions_state],
-        )
+        # shadow_btn.click(
+        #     fn=lambda pending, decisions: record_hitl_decision(pending, decisions, "SHADOW"),
+        #     inputs=[pending_calls_state, call_decisions_state],
+        #     outputs=[pending_calls_state, call_decisions_state],
+        # ).then(
+        #     fn=render_hitl_modal,
+        #     inputs=pending_calls_state,
+        #     outputs=[hitl_md, hitl_modal],
+        # ).then(
+        #     fn=resume_after_hitl,
+        #     inputs=[chat_state, trace_state, session_id, pending_calls_state, call_decisions_state],
+        #     outputs=[chatbox, trace_md, chat_state, trace_state, pending_calls_state, call_decisions_state],
+        # )
 
         # REJECT
         reject_btn.click(

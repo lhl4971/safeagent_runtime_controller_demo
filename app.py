@@ -19,7 +19,7 @@ async def main():
         server_name="0.0.0.0",
         server_port=22337,
         auth=verify_credentials,
-        auth_message="Vibe Shell Agent Red Team Operation Platform Access Control",
+        auth_message="VibeShell Agent Red Team Operation Platform Access Control",
         show_api=False
     )
 

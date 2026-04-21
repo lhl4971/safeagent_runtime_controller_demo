@@ -31,7 +31,7 @@ def _extract_hitl_outcomes(decisions: List[Dict[str, Any]]):
 
         if status == "SHADOW":
             args = dict(args)
-            # args["run_shadow"] = True
+            args["execution_mode"] = "shadow"
 
         if status in ("APPROVE", "SHADOW"):
             approved_calls.append({"id": call_id, "name": name, "args": args})
